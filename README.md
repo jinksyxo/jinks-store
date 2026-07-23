@@ -1,16 +1,29 @@
-# React + Vite
+# matsumoto*
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Local storefront and admin workflow for Matsumoto.
 
-Currently, two official plugins are available:
+## Run it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Create `.env.local` from `.env.example`.
+2. Set `ADMIN_PASSWORD` and `SESSION_SECRET`.
+3. Run `npm run dev`.
 
-## React Compiler
+That starts:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- the Vite frontend at `http://localhost:5173`
+- the Node backend at `http://localhost:3001`
 
-## Expanding the ESLint configuration
+## Admin portal
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The admin page lives at `/dev`.
+
+- Auth is handled by the backend with a signed session cookie.
+- Products are stored in `server/data/products.json`.
+- Uploaded images are stored in `server/data/uploads/`.
+
+Those runtime files are ignored by git.
+
+## Build
+
+- `npm run build` builds the frontend into `dist/`
+- `npm run start` serves the built frontend, API, and uploaded images from the Node server
