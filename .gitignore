@@ -23,4 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 server/data/products.json
+server/data/backups/
+server/data/*.sqlite
+server/data/*.sqlite-*
+server/data/shirt-inventory.json
+server/data/stripe-orders.json
 server/data/uploads/

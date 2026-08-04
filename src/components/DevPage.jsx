@@ -1,20 +1,74 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  createStoreBackup,
+  downloadAdminFile,
+  getCustomers,
+  getStripeOrders,
+  getStoreBackups,
+  getSharedShirtInventory,
   getDevPortalSession,
   loginToDevPortal,
   logoutFromDevPortal,
+  updateCustomer,
+  updateStripeOrder,
+  updateSharedShirtInventory,
 } from '../lib/devPortalStore'
+
+const DEV_PORTAL_PAGES = [
+  { href: '/dev', label: 'upload products' },
+  { href: '/dev/orders', label: 'orders' },
+  { href: '/dev/customers', label: 'customers' },
+  { href: '/dev/backups', label: 'store backups' },
+]
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 const MAX_IMAGE_COUNT = 6
-const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024
-const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024
+const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024
 const COLOR_OPTIONS = [
   { id: 'black', label: 'black' },
   { id: 'white', label: 'white' },
   { id: 'ash-grey', label: 'ash grey' },
 ]
 const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL']
+const PRODUCT_TYPE_OPTIONS = [
+  { id: 'shirt', label: 'shirt' },
+  { id: 'bottoms', label: 'bottoms' },
+  { id: 'merch', label: 'merch' },
+]
+const ORDER_FULFILLMENT_STATUS_OPTIONS = [
+  { id: 'unfulfilled', label: 'unfulfilled' },
+  { id: 'preparing', label: 'preparing' },
+  { id: 'packed', label: 'packed' },
+  { id: 'shipped', label: 'shipped' },
+  { id: 'delivered', label: 'delivered' },
+  { id: 'cancelled', label: 'cancelled' },
+]
+const ORDER_REFUND_STATUS_OPTIONS = [
+  { id: 'not_refunded', label: 'not refunded' },
+  { id: 'pending_review', label: 'pending review' },
+  { id: 'refunded', label: 'refunded' },
+]
+
+function defaultProductTypeForCategory(category) {
+  if (category === '/bottoms') {
+    return 'bottoms'
+  }
+
+  if (category === '/other-merchandise') {
+    return 'merch'
+  }
+
+  return 'shirt'
+}
+
+function defaultAllowedSizesForProductType(productType) {
+  return productType === 'merch' ? [] : [...SIZE_OPTIONS]
+}
+
+function defaultInventoryScopeForProductType(productType) {
+  return productType === 'shirt' ? 'shared-shirt' : 'untracked'
+}
 
 function createBlankInventory() {
   return COLOR_OPTIONS.reduce((inventory, color) => {
@@ -27,18 +81,74 @@ function createBlankInventory() {
   }, {})
 }
 
+function normalizeInventoryValues(inventory) {
+  return COLOR_OPTIONS.reduce((nextInventory, color) => {
+    nextInventory[color.id] = SIZE_OPTIONS.reduce((sizes, size) => {
+      sizes[size] = Number(inventory[color.id][size] || 0)
+      return sizes
+    }, {})
+    return nextInventory
+  }, {})
+}
+
+function formatInventoryValues(inventory) {
+  return COLOR_OPTIONS.reduce((nextInventory, color) => {
+    nextInventory[color.id] = SIZE_OPTIONS.reduce((sizes, size) => {
+      sizes[size] = String(inventory?.[color.id]?.[size] ?? 0)
+      return sizes
+    }, {})
+    return nextInventory
+  }, {})
+}
+
 function createInitialForm(defaultCategory) {
+  const productType = defaultProductTypeForCategory(defaultCategory)
+
   return {
     category: defaultCategory,
+    slug: '',
+    active: true,
+    productType,
+    allowedSizes: defaultAllowedSizesForProductType(productType),
     title: '',
     description: '',
     price: '',
     hasDeal: false,
+    addToFeaturedCollection: false,
+    addToUtahCollection: false,
     salePrice: '',
     colors: ['black'],
-    inventory: createBlankInventory(),
+    existingImages: [],
     files: [],
   }
+}
+
+function createFormFromProduct(product) {
+  const productType = product.productType || defaultProductTypeForCategory(product.category)
+
+  return {
+    category: product.category,
+    slug: product.slug || '',
+    active: product.active !== false,
+    productType,
+    allowedSizes: [...(product.allowedSizes || defaultAllowedSizesForProductType(productType))],
+    title: product.name,
+    description: product.description,
+    price: String(product.price),
+    hasDeal: Boolean(product.hasDeal),
+    addToFeaturedCollection: Boolean(
+      product.addToFeaturedCollection ?? product.addToCollection,
+    ),
+    addToUtahCollection: Boolean(product.addToUtahCollection),
+    salePrice: product.salePrice ? String(product.salePrice) : '',
+    colors: [...(product.colors || ['black'])],
+    existingImages: [...(product.images || [])],
+    files: [],
+  }
+}
+
+function removeImageAtIndex(images, indexToRemove) {
+  return images.filter((_, index) => index !== indexToRemove)
 }
 
 function readFileAsDataUrl(file) {
@@ -60,29 +170,79 @@ function formatCurrency(value) {
 
 function summarizeInventory(product) {
   const colorSummary = (product.colors || []).map((color) => color.replace('-', ' ')).join(', ')
-  const totalUnits = Object.values(product.inventory ?? {}).reduce((sum, sizes) => {
-    const sizeCount = Object.values(sizes ?? {}).reduce(
-      (sizeSum, quantity) => sizeSum + Number(quantity || 0),
-      0,
-    )
-
-    return sum + sizeCount
-  }, 0)
-
-  return `${colorSummary} · ${totalUnits} units`
+  const scopeSummary =
+    product.inventoryScope === 'shared-shirt'
+      ? 'shared shirt stock'
+      : 'inventory not tracked yet'
+  return [colorSummary || 'No colors selected', scopeSummary].join(' • ')
 }
 
-function validateForm(formState) {
+function formatStripeAmount(amount, currency = 'usd') {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: String(currency || 'usd').toUpperCase(),
+  }).format(Number(amount || 0) / 100)
+}
+
+function formatOrderTimestamp(value) {
+  const timestamp = new Date(value)
+
+  if (Number.isNaN(timestamp.getTime())) {
+    return 'Unknown time'
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(timestamp)
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0)
+
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  if (size >= 1024) {
+    return `${Math.round(size / 1024)} KB`
+  }
+
+  return `${size} B`
+}
+
+function createOrderDraft(order) {
+  return {
+    fulfillmentStatus: order.fulfillmentStatus || 'unfulfilled',
+    refundStatus: order.refundStatus || 'not_refunded',
+    shippingCarrier: order.shippingCarrier || '',
+    trackingNumber: order.trackingNumber || '',
+    fulfillmentNotes: order.fulfillmentNotes || '',
+  }
+}
+
+function createCustomerDraft(customer) {
+  return {
+    newsletterOptIn: Boolean(customer.newsletterOptIn),
+    tags: Array.isArray(customer.tags) ? customer.tags.join(', ') : '',
+    notes: customer.notes || '',
+  }
+}
+
+function validateForm(formState, options = {}) {
   const errors = []
+  const { allowExistingImages = false } = options
   const trimmedTitle = formState.title.trim()
   const trimmedDescription = formState.description.trim()
   const numericPrice = Number(formState.price)
   const numericSalePrice = Number(formState.salePrice)
   const selectedFiles = formState.files
+  const totalImageCount = formState.existingImages.length + selectedFiles.length
   const totalFileBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0)
-  const hasInventory = formState.colors.some((color) =>
-    SIZE_OPTIONS.some((size) => Number(formState.inventory[color][size] || 0) > 0),
-  )
+  const hasExistingImages = allowExistingImages && formState.existingImages.length > 0
 
   if (!trimmedTitle) {
     errors.push('Enter a product title.')
@@ -92,8 +252,23 @@ function validateForm(formState) {
     errors.push('Enter a product description.')
   }
 
+  if (formState.slug && !/[a-z0-9]/i.test(formState.slug)) {
+    errors.push('Enter a slug with letters or numbers.')
+  }
+
   if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
     errors.push('Price must be greater than zero.')
+  }
+
+  if (
+    !formState.active &&
+    (formState.addToFeaturedCollection || formState.addToUtahCollection)
+  ) {
+    errors.push('Inactive products cannot be added to the collection.')
+  }
+
+  if (formState.productType !== 'merch' && !formState.allowedSizes.length) {
+    errors.push('Select at least one allowed size.')
   }
 
   if (formState.hasDeal) {
@@ -110,15 +285,11 @@ function validateForm(formState) {
     errors.push('Select at least one color.')
   }
 
-  if (!hasInventory) {
-    errors.push('Add at least one quantity greater than zero in the inventory grid.')
-  }
-
-  if (!selectedFiles.length) {
+  if (!selectedFiles.length && !hasExistingImages) {
     errors.push('Upload at least one product image.')
   }
 
-  if (selectedFiles.length > MAX_IMAGE_COUNT) {
+  if (totalImageCount > MAX_IMAGE_COUNT) {
     errors.push(`Use ${MAX_IMAGE_COUNT} images or fewer.`)
   }
 
@@ -132,18 +303,14 @@ function validateForm(formState) {
     }
 
     if (file.size > MAX_IMAGE_BYTES) {
-      errors.push(`${file.name} is larger than 2.5 MB.`)
+      errors.push(`${file.name} is larger than 6 MB.`)
     }
   })
 
   return errors
 }
 
-function ProductInventoryTable({ colors, inventory, onQuantityChange }) {
-  if (!colors.length) {
-    return <p className="dev-inventory-empty">Select a color to unlock the inventory grid.</p>
-  }
-
+function ProductInventoryTable({ inventory, onQuantityChange }) {
   return (
     <div className="dev-inventory-wrap">
       <table className="dev-inventory-table">
@@ -156,18 +323,18 @@ function ProductInventoryTable({ colors, inventory, onQuantityChange }) {
           </tr>
         </thead>
         <tbody>
-          {colors.map((color) => (
-            <tr key={color}>
-              <th>{COLOR_OPTIONS.find((option) => option.id === color)?.label ?? color}</th>
+          {COLOR_OPTIONS.map((color) => (
+            <tr key={color.id}>
+              <th>{color.label}</th>
               {SIZE_OPTIONS.map((size) => (
-                <td key={`${color}-${size}`}>
+                <td key={`${color.id}-${size}`}>
                   <input
                     type="number"
                     min="0"
                     inputMode="numeric"
-                    value={inventory[color][size]}
-                    onChange={(event) => onQuantityChange(color, size, event.target.value)}
-                    aria-label={`${color} ${size} quantity`}
+                    value={inventory[color.id][size]}
+                    onChange={(event) => onQuantityChange(color.id, size, event.target.value)}
+                    aria-label={`${color.label} ${size} quantity`}
                   />
                 </td>
               ))}
@@ -179,7 +346,13 @@ function ProductInventoryTable({ colors, inventory, onQuantityChange }) {
   )
 }
 
-function UploadedProductList({ categories, products, onDeleteProduct, onNavigate }) {
+function UploadedProductList({
+  categories,
+  products,
+  onDeleteProduct,
+  onEditProduct,
+  onNavigate,
+}) {
   if (!products.length) {
     return (
       <div className="dev-uploaded-empty">
@@ -225,8 +398,19 @@ function UploadedProductList({ categories, products, onDeleteProduct, onNavigate
             <button
               type="button"
               className="button button-secondary"
+              onClick={() => onEditProduct(product)}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
               onClick={() => {
-                if (window.confirm(`Delete ${product.name}?`)) {
+                if (
+                  window.confirm(
+                    `Are you sure you want to delete ${product.name}? This cannot be undone.`,
+                  )
+                ) {
                   onDeleteProduct(product.id)
                 }
               }}
@@ -240,7 +424,350 @@ function UploadedProductList({ categories, products, onDeleteProduct, onNavigate
   )
 }
 
-function PasswordGate({ password, onPasswordChange, onUnlock, error, isChecking, isSubmitting }) {
+function OrdersList({ orders, onSaveOrder, savingOrderId }) {
+  const [drafts, setDrafts] = useState({})
+  const [messages, setMessages] = useState({})
+
+  useEffect(() => {
+    setDrafts(
+      orders.reduce((nextDrafts, order) => {
+        nextDrafts[order.sessionId] = createOrderDraft(order)
+        return nextDrafts
+      }, {}),
+    )
+  }, [orders])
+
+  const updateDraftField = (sessionId, fieldName, value) => {
+    setDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [sessionId]: {
+        ...(currentDrafts[sessionId] || {}),
+        [fieldName]: value,
+      },
+    }))
+  }
+
+  const handleSave = async (sessionId) => {
+    const draft = drafts[sessionId]
+
+    if (!draft) {
+      return
+    }
+
+    const didSave = await onSaveOrder(sessionId, draft)
+
+    if (didSave) {
+      setMessages((currentMessages) => ({
+        ...currentMessages,
+        [sessionId]: 'Fulfillment details saved.',
+      }))
+    }
+  }
+
+  if (!orders.length) {
+    return (
+      <div className="dev-uploaded-empty">
+        <p>No Stripe orders yet.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="dev-orders-list">
+      {orders.map((order) => (
+        <article className="dev-order-card" key={order.sessionId}>
+          {(() => {
+            const draft = drafts[order.sessionId] || createOrderDraft(order)
+            const isSaving = savingOrderId === order.sessionId
+
+            return (
+              <>
+          <div className="dev-order-heading">
+            <div>
+              <p className="dev-order-status">{draft.fulfillmentStatus.replace(/_/g, ' ')}</p>
+              <h3>{formatStripeAmount(order.amountTotal, order.currency)}</h3>
+            </div>
+            <span>{formatOrderTimestamp(order.fulfilledAt || order.updatedAt)}</span>
+          </div>
+
+          <div className="dev-order-meta">
+            <p>{order.customerEmail || 'No customer email provided'}</p>
+            <p>{order.paymentStatus}</p>
+            <p>{draft.refundStatus.replace(/_/g, ' ')}</p>
+          </div>
+
+          <div className="dev-order-lines">
+            {order.lineItems.map((item, index) => (
+              <p key={`${order.sessionId}-${item.productId}-${index}`}>
+                {item.productName} • {item.color} {item.size} • Qty {item.quantity}
+              </p>
+            ))}
+          </div>
+
+          <div className="dev-order-controls">
+            <label className="dev-field">
+              <span>Fulfillment status</span>
+              <select
+                value={draft.fulfillmentStatus}
+                onChange={(event) =>
+                  updateDraftField(order.sessionId, 'fulfillmentStatus', event.target.value)
+                }
+              >
+                {ORDER_FULFILLMENT_STATUS_OPTIONS.map((status) => (
+                  <option key={status.id} value={status.id}>
+                    {status.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="dev-field">
+              <span>Carrier</span>
+              <input
+                type="text"
+                value={draft.shippingCarrier}
+                onChange={(event) =>
+                  updateDraftField(order.sessionId, 'shippingCarrier', event.target.value)
+                }
+                placeholder="USPS, UPS, DHL"
+              />
+            </label>
+
+            <label className="dev-field">
+              <span>Refund status</span>
+              <select
+                value={draft.refundStatus}
+                onChange={(event) =>
+                  updateDraftField(order.sessionId, 'refundStatus', event.target.value)
+                }
+              >
+                {ORDER_REFUND_STATUS_OPTIONS.map((status) => (
+                  <option key={status.id} value={status.id}>
+                    {status.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="dev-field">
+              <span>Tracking number</span>
+              <input
+                type="text"
+                value={draft.trackingNumber}
+                onChange={(event) =>
+                  updateDraftField(order.sessionId, 'trackingNumber', event.target.value)
+                }
+                placeholder="Tracking reference"
+              />
+            </label>
+
+            <label className="dev-field dev-field-wide">
+              <span>Fulfillment notes</span>
+              <textarea
+                rows="3"
+                value={draft.fulfillmentNotes}
+                onChange={(event) =>
+                  updateDraftField(order.sessionId, 'fulfillmentNotes', event.target.value)
+                }
+                placeholder="Packing notes, shipment details, customer follow-up"
+              />
+            </label>
+          </div>
+
+          <div className="dev-order-footer">
+            {messages[order.sessionId] ? (
+              <p className="dev-form-success">{messages[order.sessionId]}</p>
+            ) : null}
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={() => handleSave(order.sessionId)}
+              disabled={isSaving}
+            >
+              {isSaving ? 'Saving order...' : 'Save order status'}
+            </button>
+          </div>
+              </>
+            )
+          })()}
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function CustomersList({
+  customers,
+  onExport,
+  isExporting,
+  onSaveCustomer,
+  savingCustomerEmail,
+}) {
+  const [drafts, setDrafts] = useState({})
+  const [messages, setMessages] = useState({})
+
+  useEffect(() => {
+    setDrafts(
+      customers.reduce((nextDrafts, customer) => {
+        nextDrafts[customer.email] = createCustomerDraft(customer)
+        return nextDrafts
+      }, {}),
+    )
+  }, [customers])
+
+  const updateDraftField = (customerEmail, fieldName, value) => {
+    setDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [customerEmail]: {
+        ...(currentDrafts[customerEmail] || {}),
+        [fieldName]: value,
+      },
+    }))
+  }
+
+  const handleSave = async (customerEmail) => {
+    const draft = drafts[customerEmail]
+
+    if (!draft) {
+      return
+    }
+
+    const didSave = await onSaveCustomer(customerEmail, {
+      newsletterOptIn: Boolean(draft.newsletterOptIn),
+      tags: String(draft.tags || '')
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      notes: String(draft.notes || ''),
+    })
+
+    if (didSave) {
+      setMessages((currentMessages) => ({
+        ...currentMessages,
+        [customerEmail]: 'Customer saved.',
+      }))
+    }
+  }
+
+  if (!customers.length) {
+    return (
+      <div className="dev-uploaded-empty">
+        <p>No customers captured yet.</p>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="dev-backup-actions">
+        <button
+          type="button"
+          className="button button-secondary"
+          onClick={onExport}
+          disabled={isExporting}
+        >
+          {isExporting ? 'Exporting emails...' : 'Download CSV'}
+        </button>
+      </div>
+
+      <div className="dev-backup-list">
+        {customers.map((customer) => {
+          const draft = drafts[customer.email] || createCustomerDraft(customer)
+          const isSaving = savingCustomerEmail === customer.email
+
+          return (
+            <article className="dev-order-card" key={customer.email}>
+              <div className="dev-order-heading">
+                <div>
+                  <p className="dev-order-status">
+                    {customer.newsletterOptIn ? 'newsletter opted in' : 'newsletter not opted in'}
+                  </p>
+                  <h3>{customer.email}</h3>
+                </div>
+                <span>{formatOrderTimestamp(customer.lastOrderedAt || customer.updatedAt)}</span>
+              </div>
+
+              <div className="dev-order-meta">
+                <p>
+                  {customer.paidOrderCount} paid order{customer.paidOrderCount === 1 ? '' : 's'}
+                </p>
+                <p>{formatStripeAmount(customer.totalSpent, customer.currency)}</p>
+                <p>last session {customer.latestSessionId || 'unknown'}</p>
+              </div>
+
+              <div className="dev-order-controls">
+                <label className="dev-toggle">
+                  <input
+                    type="checkbox"
+                    checked={draft.newsletterOptIn}
+                    onChange={(event) =>
+                      updateDraftField(customer.email, 'newsletterOptIn', event.target.checked)
+                    }
+                  />
+                  <span>Newsletter opt-in</span>
+                </label>
+
+                <label className="dev-field dev-field-wide">
+                  <span>Tags</span>
+                  <input
+                    type="text"
+                    value={draft.tags}
+                    onChange={(event) =>
+                      updateDraftField(customer.email, 'tags', event.target.value)
+                    }
+                    placeholder="vip, wholesale, repeat buyer"
+                  />
+                </label>
+
+                <label className="dev-field dev-field-wide">
+                  <span>Notes</span>
+                  <textarea
+                    rows="3"
+                    value={draft.notes}
+                    onChange={(event) =>
+                      updateDraftField(customer.email, 'notes', event.target.value)
+                    }
+                    placeholder="Customer notes, sizing feedback, follow-up reminders"
+                  />
+                </label>
+              </div>
+
+              <div className="dev-order-footer">
+                {messages[customer.email] ? (
+                  <p className="dev-form-success">{messages[customer.email]}</p>
+                ) : null}
+                <div className="dev-backup-actions">
+                  <a className="button button-secondary" href={`mailto:${customer.email}`}>
+                    Email
+                  </a>
+                  <button
+                    type="button"
+                    className="button button-primary"
+                    onClick={() => handleSave(customer.email)}
+                    disabled={isSaving}
+                  >
+                    {isSaving ? 'Saving customer...' : 'Save customer'}
+                  </button>
+                </div>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </>
+  )
+}
+
+function PasswordGate({
+  password,
+  onPasswordChange,
+  onUnlock,
+  error,
+  isChecking,
+  isSubmitting,
+  isPasswordVisible,
+  onTogglePasswordVisibility,
+}) {
   return (
     <section className="notes-section route-section dev-lock">
       <div className="notes-copy">
@@ -259,12 +786,21 @@ function PasswordGate({ password, onPasswordChange, onUnlock, error, isChecking,
           <form className="dev-lock-form" onSubmit={onUnlock}>
             <label className="dev-field">
               <span>Password</span>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => onPasswordChange(event.target.value)}
-                autoComplete="current-password"
-              />
+              <div className="dev-password-row">
+                <input
+                  type={isPasswordVisible ? 'text' : 'password'}
+                  value={password}
+                  onChange={(event) => onPasswordChange(event.target.value)}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  className="button button-secondary dev-password-toggle"
+                  onClick={onTogglePasswordVisibility}
+                >
+                  {isPasswordVisible ? 'Hide password' : 'View password'}
+                </button>
+              </div>
             </label>
             {error ? <p className="dev-form-error">{error}</p> : null}
             <button className="button button-primary" type="submit" disabled={isSubmitting}>
@@ -277,12 +813,34 @@ function PasswordGate({ password, onPasswordChange, onUnlock, error, isChecking,
   )
 }
 
+function DevPortalNav({ pathname, onNavigate }) {
+  return (
+    <div className="dev-portal-nav" aria-label="Dev portal pages">
+      {DEV_PORTAL_PAGES.map((page) => (
+        <a
+          key={page.href}
+          className={`button ${
+            pathname === page.href ? 'button-primary dev-portal-nav-active' : 'button-secondary'
+          }`}
+          href={page.href}
+          onClick={(event) => onNavigate(event, page.href)}
+          aria-current={pathname === page.href ? 'page' : undefined}
+        >
+          {page.label}
+        </a>
+      ))}
+    </div>
+  )
+}
+
 function DevPage({
   categories,
   products,
   onSaveProduct,
+  onUpdateProduct,
   onDeleteProduct,
   onNavigate,
+  pathname,
   storageError,
 }) {
   const defaultCategory = categories[0]?.href || '/tees'
@@ -292,18 +850,54 @@ function DevPage({
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false)
   const [formState, setFormState] = useState(() => createInitialForm(defaultCategory))
+  const [editingProductId, setEditingProductId] = useState(null)
+  const [shirtInventory, setShirtInventory] = useState(() => createBlankInventory())
   const [formErrors, setFormErrors] = useState([])
   const [saveMessage, setSaveMessage] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [inventoryMessage, setInventoryMessage] = useState('')
+  const [isInventorySaving, setIsInventorySaving] = useState(false)
+  const [orders, setOrders] = useState([])
+  const [ordersError, setOrdersError] = useState('')
+  const [savingOrderId, setSavingOrderId] = useState('')
+  const [customers, setCustomers] = useState([])
+  const [customersError, setCustomersError] = useState('')
+  const [savingCustomerEmail, setSavingCustomerEmail] = useState('')
+  const [isExportingCustomers, setIsExportingCustomers] = useState(false)
+  const [backups, setBackups] = useState([])
+  const [backupError, setBackupError] = useState('')
+  const [backupMessage, setBackupMessage] = useState('')
+  const [isCreatingBackup, setIsCreatingBackup] = useState(false)
+  const [isExportingStore, setIsExportingStore] = useState(false)
 
-  const imagePreviews = useMemo(
+  const newImagePreviews = useMemo(
     () =>
       formState.files.map((file) => ({
         name: file.name,
         url: URL.createObjectURL(file),
       })),
     [formState.files],
+  )
+
+  const imagePreviews = useMemo(
+    () => [
+      ...formState.existingImages.map((url, index) => ({
+        id: `existing-${url}-${index}`,
+        kind: 'existing',
+        index,
+        name: `Current image ${index + 1}`,
+        url,
+      })),
+      ...newImagePreviews.map((preview, index) => ({
+        ...preview,
+        id: `new-${preview.url}`,
+        kind: 'new',
+        index,
+      })),
+    ],
+    [formState.existingImages, newImagePreviews],
   )
 
   useEffect(() => {
@@ -338,10 +932,133 @@ function DevPage({
   }, [])
 
   useEffect(() => {
-    return () => {
-      imagePreviews.forEach((preview) => URL.revokeObjectURL(preview.url))
+    if (!isUnlocked) {
+      return undefined
     }
-  }, [imagePreviews])
+
+    let isActive = true
+
+    getSharedShirtInventory()
+      .then((inventory) => {
+        if (!isActive) {
+          return
+        }
+
+        setShirtInventory(
+          COLOR_OPTIONS.reduce((nextInventory, color) => {
+            nextInventory[color.id] = SIZE_OPTIONS.reduce((sizes, size) => {
+              sizes[size] = String(inventory?.[color.id]?.[size] ?? 0)
+              return sizes
+            }, {})
+            return nextInventory
+          }, {}),
+        )
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return
+        }
+
+        setFormErrors([error.message || 'The shared shirt inventory could not be loaded.'])
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [isUnlocked])
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      return undefined
+    }
+
+    let isActive = true
+
+    getStripeOrders()
+      .then((loadedOrders) => {
+        if (!isActive) {
+          return
+        }
+
+        setOrders(loadedOrders)
+        setOrdersError('')
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return
+        }
+
+        setOrdersError(error.message || 'Stripe orders could not be loaded.')
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [isUnlocked, products])
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      return undefined
+    }
+
+    let isActive = true
+
+    getCustomers()
+      .then((loadedCustomers) => {
+        if (!isActive) {
+          return
+        }
+
+        setCustomers(loadedCustomers)
+        setCustomersError('')
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return
+        }
+
+        setCustomersError(error.message || 'Customers could not be loaded.')
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [isUnlocked, orders])
+
+  useEffect(() => {
+    if (!isUnlocked) {
+      return undefined
+    }
+
+    let isActive = true
+
+    getStoreBackups()
+      .then((loadedBackups) => {
+        if (!isActive) {
+          return
+        }
+
+        setBackups(loadedBackups)
+        setBackupError('')
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return
+        }
+
+        setBackupError(error.message || 'Store backups could not be loaded.')
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [isUnlocked])
+
+  useEffect(() => {
+    return () => {
+      newImagePreviews.forEach((preview) => URL.revokeObjectURL(preview.url))
+    }
+  }, [newImagePreviews])
 
   const updateField = (fieldName, nextValue) => {
     setFormState((currentState) => ({
@@ -363,15 +1080,12 @@ function DevPage({
     })
   }
 
-  const handleQuantityChange = (color, size, value) => {
-    setFormState((currentState) => ({
-      ...currentState,
-      inventory: {
-        ...currentState.inventory,
-        [color]: {
-          ...currentState.inventory[color],
-          [size]: value === '' ? '' : String(Math.max(0, Number(value))),
-        },
+  const handleInventoryQuantityChange = (color, size, value) => {
+    setShirtInventory((currentInventory) => ({
+      ...currentInventory,
+      [color]: {
+        ...currentInventory[color],
+        [size]: value === '' ? '' : String(Math.max(0, Number(value))),
       },
     }))
   }
@@ -379,6 +1093,76 @@ function DevPage({
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files ?? [])
     updateField('files', selectedFiles)
+  }
+
+  const handleCategoryChange = (nextCategory) => {
+    setFormState((currentState) => {
+      const currentDefaultType = defaultProductTypeForCategory(currentState.category)
+      const nextDefaultType = defaultProductTypeForCategory(nextCategory)
+      const nextProductType =
+        currentState.productType === currentDefaultType ? nextDefaultType : currentState.productType
+      const currentDefaultSizes = defaultAllowedSizesForProductType(currentState.productType)
+      const nextAllowedSizes =
+        currentState.allowedSizes.join('|') === currentDefaultSizes.join('|')
+          ? defaultAllowedSizesForProductType(nextProductType)
+          : currentState.allowedSizes
+
+      return {
+        ...currentState,
+        category: nextCategory,
+        productType: nextProductType,
+        allowedSizes: nextAllowedSizes,
+      }
+    })
+  }
+
+  const handleProductTypeChange = (nextProductType) => {
+    setFormState((currentState) => {
+      const currentDefaultSizes = defaultAllowedSizesForProductType(currentState.productType)
+      const nextAllowedSizes =
+        currentState.allowedSizes.join('|') === currentDefaultSizes.join('|') ||
+        !currentState.allowedSizes.length
+          ? defaultAllowedSizesForProductType(nextProductType)
+          : currentState.allowedSizes
+
+      return {
+        ...currentState,
+        productType: nextProductType,
+        allowedSizes: nextAllowedSizes,
+      }
+    })
+  }
+
+  const toggleAllowedSize = (size) => {
+    setFormState((currentState) => {
+      const sizeExists = currentState.allowedSizes.includes(size)
+
+      return {
+        ...currentState,
+        allowedSizes: sizeExists
+          ? currentState.allowedSizes.filter((allowedSize) => allowedSize !== size)
+          : [...currentState.allowedSizes, size],
+      }
+    })
+  }
+
+  const handleRemoveExistingImage = (imageIndex) => {
+    setFormState((currentState) => ({
+      ...currentState,
+      existingImages: removeImageAtIndex(currentState.existingImages, imageIndex),
+    }))
+  }
+
+  const handleRemoveNewImage = (imageIndex) => {
+    setFormState((currentState) => ({
+      ...currentState,
+      files: removeImageAtIndex(currentState.files, imageIndex),
+    }))
+  }
+
+  const resetForm = (category = defaultCategory) => {
+    setEditingProductId(null)
+    setFormState(createInitialForm(category))
   }
 
   const handleUnlock = async (event) => {
@@ -414,7 +1198,9 @@ function DevPage({
     event.preventDefault()
     setSaveMessage('')
 
-    const validationErrors = validateForm(formState)
+    const validationErrors = validateForm(formState, {
+      allowExistingImages: editingProductId !== null,
+    })
 
     if (validationErrors.length) {
       setFormErrors(validationErrors)
@@ -425,6 +1211,12 @@ function DevPage({
     setIsSaving(true)
 
     try {
+      const savedInventory = await updateSharedShirtInventory(
+        normalizeInventoryValues(shirtInventory),
+      )
+      setShirtInventory(formatInventoryValues(savedInventory))
+      setInventoryMessage('Shared shirt inventory updated.')
+
       const images = await Promise.all(
         formState.files.map(async (file) => ({
           name: file.name,
@@ -434,20 +1226,36 @@ function DevPage({
         })),
       )
 
-      const storedProduct = await onSaveProduct({
+      const payload = {
         category: formState.category,
+        slug: formState.slug.trim(),
+        active: formState.active,
+        productType: formState.productType,
+        inventoryScope: defaultInventoryScopeForProductType(formState.productType),
+        allowedSizes: [...formState.allowedSizes],
         title: formState.title.trim(),
         description: formState.description.trim(),
         price: Number(formState.price),
         hasDeal: formState.hasDeal,
+        addToFeaturedCollection: formState.addToFeaturedCollection,
+        addToUtahCollection: formState.addToUtahCollection,
         salePrice: formState.hasDeal ? Number(formState.salePrice) : null,
         colors: [...formState.colors],
-        inventory: formState.inventory,
+        existingImages: [...formState.existingImages],
         images,
-      })
+      }
 
-      setSaveMessage(`${storedProduct.name} saved to the site.`)
-      setFormState(createInitialForm(formState.category))
+      const storedProduct =
+        editingProductId !== null
+          ? await onUpdateProduct(editingProductId, payload)
+          : await onSaveProduct(payload)
+
+      setSaveMessage(
+        editingProductId !== null
+          ? `${storedProduct.name} updated.`
+          : `${storedProduct.name} saved to the site.`,
+      )
+      resetForm(formState.category)
     } catch (error) {
       if (String(error.message || '').toLowerCase().includes('unauthorized')) {
         setIsUnlocked(false)
@@ -460,9 +1268,29 @@ function DevPage({
     }
   }
 
+  const handleSaveInventory = async () => {
+    setInventoryMessage('')
+    setIsInventorySaving(true)
+
+    try {
+      const savedInventory = await updateSharedShirtInventory(
+        normalizeInventoryValues(shirtInventory),
+      )
+      setShirtInventory(formatInventoryValues(savedInventory))
+      setInventoryMessage('Shared shirt inventory updated.')
+    } catch (error) {
+      setFormErrors([error.message || 'The shared shirt inventory could not be saved.'])
+    } finally {
+      setIsInventorySaving(false)
+    }
+  }
+
   const handleDelete = async (productId) => {
     try {
       await onDeleteProduct(productId)
+      if (editingProductId === productId) {
+        resetForm()
+      }
     } catch (error) {
       if (String(error.message || '').toLowerCase().includes('unauthorized')) {
         setIsUnlocked(false)
@@ -473,6 +1301,131 @@ function DevPage({
     }
   }
 
+  const handleEdit = (product) => {
+    setEditingProductId(product.id)
+    setSaveMessage('')
+    setFormErrors([])
+    setFormState(createFormFromProduct(product))
+  }
+
+  const handleSaveOrder = async (sessionId, draft) => {
+    setSavingOrderId(sessionId)
+    setOrdersError('')
+
+    try {
+      const updatedOrder = await updateStripeOrder(sessionId, draft)
+      setOrders((currentOrders) =>
+        currentOrders.map((order) => (order.sessionId === sessionId ? updatedOrder : order)),
+      )
+      return true
+    } catch (error) {
+      if (String(error.message || '').toLowerCase().includes('unauthorized')) {
+        setIsUnlocked(false)
+        setPasswordError('Your admin session expired. Log in again.')
+      } else {
+        setOrdersError(error.message || 'The order could not be updated.')
+      }
+      return false
+    } finally {
+      setSavingOrderId('')
+    }
+  }
+
+  const handleExportStore = async () => {
+    setIsExportingStore(true)
+    setBackupError('')
+    setBackupMessage('')
+
+    try {
+      await downloadAdminFile('/api/admin/store-export', `matsumoto-store-export.json`)
+      setBackupMessage('Store export downloaded.')
+    } catch (error) {
+      setBackupError(error.message || 'Store export failed.')
+    } finally {
+      setIsExportingStore(false)
+    }
+  }
+
+  const handleCreateBackup = async () => {
+    setIsCreatingBackup(true)
+    setBackupError('')
+    setBackupMessage('')
+
+    try {
+      const backup = await createStoreBackup()
+      setBackups((currentBackups) => [backup, ...currentBackups])
+      setBackupMessage(`${backup.fileName} created.`)
+    } catch (error) {
+      setBackupError(error.message || 'SQLite backup failed.')
+    } finally {
+      setIsCreatingBackup(false)
+    }
+  }
+
+  const handleExportCustomers = async () => {
+    setIsExportingCustomers(true)
+    setCustomersError('')
+
+    try {
+      await downloadAdminFile(
+        '/api/admin/customers/export',
+        'matsumoto-customers.csv',
+      )
+    } catch (error) {
+      setCustomersError(error.message || 'Customer export failed.')
+    } finally {
+      setIsExportingCustomers(false)
+    }
+  }
+
+  const handleSaveCustomer = async (customerEmail, draft) => {
+    setSavingCustomerEmail(customerEmail)
+    setCustomersError('')
+
+    try {
+      const updatedCustomer = await updateCustomer(customerEmail, draft)
+      setCustomers((currentCustomers) =>
+        currentCustomers.map((customer) =>
+          customer.email === customerEmail ? updatedCustomer : customer,
+        ),
+      )
+      return true
+    } catch (error) {
+      if (String(error.message || '').toLowerCase().includes('unauthorized')) {
+        setIsUnlocked(false)
+        setPasswordError('Your admin session expired. Log in again.')
+      } else {
+        setCustomersError(error.message || 'The customer could not be updated.')
+      }
+      return false
+    } finally {
+      setSavingCustomerEmail('')
+    }
+  }
+
+  const isOrdersPage = pathname === '/dev/orders'
+  const isCustomersPage = pathname === '/dev/customers'
+  const isBackupsPage = pathname === '/dev/backups'
+  const isProductsPage = !isOrdersPage && !isCustomersPage && !isBackupsPage
+
+  const pageTitle = isOrdersPage
+    ? 'orders.'
+    : isCustomersPage
+      ? 'customers.'
+      : isBackupsPage
+        ? 'store backups.'
+        : editingProductId !== null
+          ? 'edit product.'
+          : 'upload products.'
+
+  const pageDescription = isOrdersPage
+    ? 'Paid checkout sessions recorded by the fulfillment webhook appear here so you can review sales and update shipping progress.'
+    : isCustomersPage
+      ? 'Stripe checkout emails are stored as customer records with editable notes, tags, and newsletter preference.'
+      : isBackupsPage
+        ? 'Download a JSON snapshot of the current store or create a timestamped SQLite backup under the server data folder.'
+        : 'Uploads are now handled by the backend. Images are stored on disk, product data is written to a JSON store, and the admin session is kept in a signed cookie.'
+
   if (!isUnlocked) {
     return (
       <PasswordGate
@@ -482,6 +1435,8 @@ function DevPage({
         error={passwordError}
         isChecking={isCheckingSession}
         isSubmitting={isAuthenticating}
+        isPasswordVisible={isPasswordVisible}
+        onTogglePasswordVisibility={() => setIsPasswordVisible((current) => !current)}
       />
     )
   }
@@ -490,12 +1445,8 @@ function DevPage({
     <section className="featured-section page-template dev-page">
       <div className="section-heading dev-section-heading">
         <p className="eyebrow">dev</p>
-        <h2>upload products.</h2>
-        <p>
-          Uploads are now handled by the backend. Images are stored on disk, product
-          data is written to a JSON store, and the admin session is kept in a signed
-          cookie.
-        </p>
+        <h2>{pageTitle}</h2>
+        <p>{pageDescription}</p>
       </div>
 
       <div className="page-link-row dev-page-actions">
@@ -514,161 +1465,391 @@ function DevPage({
         >
           {isLoggingOut ? 'Logging out...' : 'Log out'}
         </button>
+        {isProductsPage ? <DevPortalNav pathname={pathname} onNavigate={onNavigate} /> : null}
+        {isProductsPage && editingProductId !== null ? (
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => resetForm(formState.category)}
+          >
+            Cancel edit
+          </button>
+        ) : null}
       </div>
+      {!isProductsPage ? <DevPortalNav pathname={pathname} onNavigate={onNavigate} /> : null}
 
-      <div className="dev-page-grid">
-        <form className="dev-form" onSubmit={handleSubmit}>
-          <div className="dev-form-grid">
-            <label className="dev-field">
-              <span>Category</span>
-              <select
-                value={formState.category}
-                onChange={(event) => updateField('category', event.target.value)}
-              >
-                {categories.map((category) => (
-                  <option key={category.href} value={category.href}>
-                    {category.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+      {isOrdersPage ? (
+        <div className="newsletter-card dev-orders-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">recent orders</p>
+            <h3>{orders.length} Stripe order{orders.length === 1 ? '' : 's'}</h3>
+            <p>
+              Paid checkout sessions recorded by the fulfillment webhook appear here first
+              so you can check new sales before editing the catalog.
+            </p>
+          </div>
+          {ordersError ? <p className="dev-form-error">{ordersError}</p> : null}
+          <OrdersList
+            orders={orders}
+            onSaveOrder={handleSaveOrder}
+            savingOrderId={savingOrderId}
+          />
+        </div>
+      ) : null}
 
-            <label className="dev-field">
-              <span>Title</span>
-              <input
-                type="text"
-                value={formState.title}
-                onChange={(event) => updateField('title', event.target.value)}
-              />
-            </label>
+      {isCustomersPage ? (
+        <div className="newsletter-card dev-backups-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">customers</p>
+            <h3>{customers.length} customer{customers.length === 1 ? '' : 's'}</h3>
+            <p>
+              Stripe checkout emails are now stored as customer records with editable
+              notes, tags, and newsletter preference.
+            </p>
+          </div>
+          {customersError ? <p className="dev-form-error">{customersError}</p> : null}
+          <CustomersList
+            customers={customers}
+            onExport={handleExportCustomers}
+            isExporting={isExportingCustomers}
+            onSaveCustomer={handleSaveCustomer}
+            savingCustomerEmail={savingCustomerEmail}
+          />
+        </div>
+      ) : null}
 
-            <label className="dev-field dev-field-wide">
-              <span>Description</span>
-              <textarea
-                rows="5"
-                value={formState.description}
-                onChange={(event) => updateField('description', event.target.value)}
-              />
-            </label>
+      {isBackupsPage ? (
+        <div className="newsletter-card dev-backups-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">store backups</p>
+            <h3>Export the live SQLite store</h3>
+            <p>
+              Download a JSON snapshot of the current store or create a timestamped SQLite
+              backup under the server data folder.
+            </p>
+          </div>
 
-            <label className="dev-field">
-              <span>Price</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
-                value={formState.price}
-                onChange={(event) => updateField('price', event.target.value)}
-              />
-            </label>
+          <div className="dev-backup-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={handleExportStore}
+              disabled={isExportingStore}
+            >
+              {isExportingStore ? 'Exporting store...' : 'Download JSON export'}
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={handleCreateBackup}
+              disabled={isCreatingBackup}
+            >
+              {isCreatingBackup ? 'Creating backup...' : 'Create SQLite backup'}
+            </button>
+          </div>
 
-            <label className="dev-toggle">
-              <input
-                type="checkbox"
-                checked={formState.hasDeal}
-                onChange={(event) => updateField('hasDeal', event.target.checked)}
-              />
-              <span>Active deal</span>
-            </label>
+          {backupError ? <p className="dev-form-error">{backupError}</p> : null}
+          {backupMessage ? <p className="dev-form-success">{backupMessage}</p> : null}
 
-            {formState.hasDeal ? (
+          <div className="dev-backup-list">
+            {backups.length ? (
+              backups.map((backup) => (
+                <div className="dev-backup-item" key={backup.fileName}>
+                  <div>
+                    <strong>{backup.fileName}</strong>
+                    <p>
+                      {formatOrderTimestamp(backup.updatedAt)} • {formatBytes(backup.size)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => downloadAdminFile(backup.downloadUrl, backup.fileName)}
+                  >
+                    Download
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="dev-uploaded-empty">
+                <p>No SQLite backups created yet.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {isProductsPage ? (
+        <div className="dev-page-grid">
+          <form className="dev-form" onSubmit={handleSubmit}>
+            <div className="dev-form-grid">
               <label className="dev-field">
-                <span>Deal price</span>
+                <span>Category</span>
+                <select
+                  value={formState.category}
+                  onChange={(event) => handleCategoryChange(event.target.value)}
+                >
+                  {categories.map((category) => (
+                    <option key={category.href} value={category.href}>
+                      {category.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="dev-field">
+                <span>Title</span>
+                <input
+                  type="text"
+                  value={formState.title}
+                  onChange={(event) => updateField('title', event.target.value)}
+                />
+              </label>
+
+              <label className="dev-field">
+                <span>Slug</span>
+                <input
+                  type="text"
+                  value={formState.slug}
+                  onChange={(event) => updateField('slug', event.target.value)}
+                  placeholder="auto-generated-from-title"
+                />
+              </label>
+
+              <label className="dev-field">
+                <span>Product type</span>
+                <select
+                  value={formState.productType}
+                  onChange={(event) => handleProductTypeChange(event.target.value)}
+                >
+                  {PRODUCT_TYPE_OPTIONS.map((productType) => (
+                    <option key={productType.id} value={productType.id}>
+                      {productType.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="dev-field dev-field-wide">
+                <span>Description</span>
+                <textarea
+                  rows="5"
+                  value={formState.description}
+                  onChange={(event) => updateField('description', event.target.value)}
+                />
+              </label>
+
+              <label className="dev-field">
+                <span>Price</span>
                 <input
                   type="number"
                   min="0"
                   step="0.01"
                   inputMode="decimal"
-                  value={formState.salePrice}
-                  onChange={(event) => updateField('salePrice', event.target.value)}
+                  value={formState.price}
+                  onChange={(event) => updateField('price', event.target.value)}
                 />
               </label>
-            ) : null}
 
-            <fieldset className="dev-fieldset dev-field-wide">
-              <legend>Colors available</legend>
-              <div className="dev-checkbox-list">
-                {COLOR_OPTIONS.map((color) => (
-                  <label className="dev-toggle" key={color.id}>
-                    <input
-                      type="checkbox"
-                      checked={formState.colors.includes(color.id)}
-                      onChange={() => toggleColor(color.id)}
-                    />
-                    <span>{color.label}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
+              <label className="dev-toggle">
+                <input
+                  type="checkbox"
+                  checked={formState.active}
+                  onChange={(event) => updateField('active', event.target.checked)}
+                />
+                <span>Active on storefront</span>
+              </label>
 
-            <label className="dev-field dev-field-wide">
-              <span>Product images</span>
-              <input
-                type="file"
-                accept={ACCEPTED_IMAGE_TYPES.join(',')}
-                multiple
-                onChange={handleFileChange}
-              />
-              <small>JPEG, PNG, and WebP only. Max 6 files, 2.5 MB each, 10 MB total.</small>
-            </label>
-          </div>
+              <label className="dev-toggle">
+                <input
+                  type="checkbox"
+                  checked={formState.hasDeal}
+                  onChange={(event) => updateField('hasDeal', event.target.checked)}
+                />
+                <span>Active deal</span>
+              </label>
 
-          <div className="dev-image-preview-list">
-            {imagePreviews.map((preview) => (
-              <div className="dev-image-preview" key={preview.url}>
-                <img src={preview.url} alt={preview.name} />
-                <span>{preview.name}</span>
-              </div>
-            ))}
-          </div>
+              <label className="dev-toggle">
+                <input
+                  type="checkbox"
+                  checked={formState.addToFeaturedCollection}
+                  onChange={(event) =>
+                    updateField('addToFeaturedCollection', event.target.checked)
+                  }
+                />
+                <span>Add to featured collection?</span>
+              </label>
 
-          <div className="dev-inventory-section">
-            <div className="dev-inventory-copy">
-              <p className="eyebrow">inventory</p>
-              <h3>Color and size quantities</h3>
+              <label className="dev-toggle">
+                <input
+                  type="checkbox"
+                  checked={formState.addToUtahCollection}
+                  onChange={(event) =>
+                    updateField('addToUtahCollection', event.target.checked)
+                  }
+                />
+                <span>Add to Utah local collection?</span>
+              </label>
+
+              {formState.hasDeal ? (
+                <label className="dev-field">
+                  <span>Deal price</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={formState.salePrice}
+                    onChange={(event) => updateField('salePrice', event.target.value)}
+                  />
+                </label>
+              ) : null}
+
+              <fieldset className="dev-fieldset dev-field-wide">
+                <legend>Colors available</legend>
+                <div className="dev-checkbox-list">
+                  {COLOR_OPTIONS.map((color) => (
+                    <label className="dev-toggle" key={color.id}>
+                      <input
+                        type="checkbox"
+                        checked={formState.colors.includes(color.id)}
+                        onChange={() => toggleColor(color.id)}
+                      />
+                      <span>{color.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset className="dev-fieldset dev-field-wide">
+                <legend>Allowed sizes</legend>
+                <div className="dev-checkbox-list">
+                  {SIZE_OPTIONS.map((size) => (
+                    <label className="dev-toggle" key={size}>
+                      <input
+                        type="checkbox"
+                        checked={formState.allowedSizes.includes(size)}
+                        disabled={formState.productType === 'merch'}
+                        onChange={() => toggleAllowedSize(size)}
+                      />
+                      <span>{size}</span>
+                    </label>
+                  ))}
+                </div>
+                {formState.productType === 'merch' ? (
+                  <small>Merch items can skip shirt sizing.</small>
+                ) : formState.productType === 'shirt' ? (
+                  <small>Shirt products use the shared shirt inventory table below.</small>
+                ) : (
+                  <small>Bottoms are currently untracked for inventory until checkout logic is added.</small>
+                )}
+              </fieldset>
+
+              <label className="dev-field dev-field-wide">
+                <span>Product images</span>
+                <input
+                  type="file"
+                  accept={ACCEPTED_IMAGE_TYPES.join(',')}
+                  multiple
+                  onChange={handleFileChange}
+                />
+                <small>
+                  JPEG, PNG, and WebP only. Max 6 files, 6 MB each, 24 MB total.
+                  {editingProductId !== null
+                    ? ' Keep or remove current images below, and add new files if needed.'
+                    : ''}
+                </small>
+              </label>
             </div>
-            <ProductInventoryTable
-              colors={formState.colors}
-              inventory={formState.inventory}
-              onQuantityChange={handleQuantityChange}
-            />
-          </div>
 
-          {formErrors.length ? (
-            <div className="dev-form-errors">
-              {formErrors.map((error) => (
-                <p key={error}>{error}</p>
+            <div className="dev-image-preview-list">
+              {imagePreviews.map((preview) => (
+                <div className="dev-image-preview" key={preview.id}>
+                  <img src={preview.url} alt={preview.name} />
+                  <span>{preview.name}</span>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() =>
+                      preview.kind === 'existing'
+                        ? handleRemoveExistingImage(preview.index)
+                        : handleRemoveNewImage(preview.index)
+                    }
+                  >
+                    Remove image
+                  </button>
+                </div>
               ))}
             </div>
-          ) : null}
 
-          {saveMessage ? <p className="dev-form-success">{saveMessage}</p> : null}
-          {storageError ? <p className="dev-form-error">{storageError}</p> : null}
+            {formErrors.length ? (
+              <div className="dev-form-errors">
+                {formErrors.map((error) => (
+                  <p key={error}>{error}</p>
+                ))}
+              </div>
+            ) : null}
 
-          <button className="button button-primary" type="submit" disabled={isSaving}>
-            {isSaving ? 'Saving product...' : 'Save product'}
-          </button>
-        </form>
+            {saveMessage ? <p className="dev-form-success">{saveMessage}</p> : null}
+            {storageError ? <p className="dev-form-error">{storageError}</p> : null}
 
-        <aside className="dev-sidebar">
-          <div className="newsletter-card dev-sidebar-card">
-            <p className="panel-label">current uploads</p>
-            <h3>{products.length} saved product{products.length === 1 ? '' : 's'}</h3>
-            <p>
-              Uploaded products are now shared by the backend, so they persist outside
-              this browser and can be revisited after reload.
-            </p>
-          </div>
+            <button className="button button-primary" type="submit" disabled={isSaving}>
+              {isSaving
+                ? editingProductId !== null
+                  ? 'Updating product...'
+                  : 'Saving product...'
+                : editingProductId !== null
+                  ? 'Update product'
+                  : 'Save product'}
+            </button>
+          </form>
 
-          <UploadedProductList
-            categories={categories}
-            products={products}
-            onDeleteProduct={handleDelete}
-            onNavigate={onNavigate}
-          />
-        </aside>
-      </div>
+          <aside className="dev-sidebar">
+            <div className="newsletter-card dev-sidebar-card">
+              <p className="panel-label">current uploads</p>
+              <h3>{products.length} saved product{products.length === 1 ? '' : 's'}</h3>
+              <p>
+                Uploaded products are now shared by the backend, so they persist outside
+                this browser and can be revisited after reload.
+              </p>
+            </div>
+
+            <div className="newsletter-card dev-sidebar-card">
+              <div className="dev-inventory-section">
+                <div className="dev-inventory-copy">
+                  <p className="panel-label">shirt inventory</p>
+                  <h3>Universal color and size stock</h3>
+                  <p>
+                    This stock counter is shared across shirts globally and is no longer
+                    tied to individual product listings.
+                  </p>
+                </div>
+                <ProductInventoryTable
+                  inventory={shirtInventory}
+                  onQuantityChange={handleInventoryQuantityChange}
+                />
+                {inventoryMessage ? <p className="dev-form-success">{inventoryMessage}</p> : null}
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={handleSaveInventory}
+                  disabled={isInventorySaving}
+                >
+                  {isInventorySaving ? 'Saving inventory...' : 'Save shirt inventory'}
+                </button>
+              </div>
+            </div>
+
+            <UploadedProductList
+              categories={categories}
+              products={products}
+              onDeleteProduct={handleDelete}
+              onEditProduct={handleEdit}
+              onNavigate={onNavigate}
+            />
+          </aside>
+        </div>
+      ) : null}
     </section>
   )
 }

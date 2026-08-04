@@ -1,25 +1,18 @@
-function ProductCard({ product }) {
+function ProductCard({ product, onNavigate }) {
   const formatCurrency = (value) =>
     new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
     }).format(value)
   const formatColorLabel = (value) => value.replace('-', ' ')
+  const sizeSummary = Array.isArray(product.allowedSizes) ? product.allowedSizes.join(', ') : ''
   const primaryImage = product.images?.[0] || '/tee-mockup.png'
   const hoverImage = product.images?.[1] || product.images?.[0] || '/tee-mockup-hover.jpg'
   const hasDeal = product.hasDeal && product.salePrice
-  const totalUnits = Object.values(product.inventory ?? {}).reduce((sum, sizes) => {
-    const sizeCount = Object.values(sizes ?? {}).reduce(
-      (sizeSum, quantity) => sizeSum + Number(quantity || 0),
-      0,
-    )
-
-    return sum + sizeCount
-  }, 0)
-  const variantSummary =
-    product.colors?.length && totalUnits
-      ? `${product.colors.map(formatColorLabel).join(', ')} · ${totalUnits} units`
-      : null
+  const colorSummary =
+    product.colors?.length ? product.colors.map(formatColorLabel).join(', ') : null
+  const variantSummary = [colorSummary, sizeSummary].filter(Boolean).join(' • ') || null
+  const productHref = `/products/${product.slug}`
 
   return (
     <article className="product-card">
@@ -59,6 +52,15 @@ function ProductCard({ product }) {
         </div>
         <p>{product.description}</p>
         {variantSummary ? <p className="product-variant-note">{variantSummary}</p> : null}
+        <div className="product-actions">
+          <a
+            className="button button-primary"
+            href={productHref}
+            onClick={(event) => onNavigate(event, productHref)}
+          >
+            Choose options
+          </a>
+        </div>
       </div>
     </article>
   )
