@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import gsap from 'gsap'
 import * as THREE from 'three'
 
@@ -138,7 +138,6 @@ function FallbackRail({ items, onNavigate }) {
                     <h3>{item.title}</h3>
                     <span>{item.price}</span>
                   </div>
-                  <p>{item.copy}</p>
                   <span className="featured-accent">{item.accent}</span>
                 </div>
               </article>
@@ -155,7 +154,6 @@ function FallbackRail({ items, onNavigate }) {
                   <h3>{item.title}</h3>
                   <span>{item.price}</span>
                 </div>
-                <p>{item.copy}</p>
                 <span className="featured-accent">{item.accent}</span>
               </div>
             </article>
@@ -171,11 +169,22 @@ export default function LiquidGlassCarouselSection({ headingId, items, onNavigat
   const canvasRef = useRef(null)
   const snapRequestRef = useRef(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [isFallback, setIsFallback] = useState(false)
   const [interactionLabel, setInteractionLabel] = useState('drag or scroll')
-  const selectedItem = items[selectedIndex] || items[0]
+  const [hasInteractiveSupport] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
 
-  const navigateToItem = (index) => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return false
+    }
+
+    return supportsWebGl()
+  })
+  const selectedItem = items[selectedIndex] || items[0]
+  const isFallback = !items.length || !hasInteractiveSupport
+
+  const navigateToItem = useEffectEvent((index) => {
     const targetItem = items[index]
 
     if (!targetItem?.href || typeof onNavigate !== 'function') {
@@ -183,26 +192,16 @@ export default function LiquidGlassCarouselSection({ headingId, items, onNavigat
     }
 
     onNavigate(buildSyntheticNavEvent(), targetItem.href)
-  }
+  })
 
   useEffect(() => {
-    if (!items.length) {
-      setIsFallback(true)
+    if (!items.length || !hasInteractiveSupport) {
       return undefined
     }
 
     if (typeof window === 'undefined' || !stageRef.current || !canvasRef.current) {
       return undefined
     }
-
-    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
-
-    if (reducedMotionQuery.matches || !supportsWebGl()) {
-      setIsFallback(true)
-      return undefined
-    }
-
-    setIsFallback(false)
 
     const stage = stageRef.current
     const renderer = new THREE.WebGLRenderer({
@@ -593,7 +592,7 @@ export default function LiquidGlassCarouselSection({ headingId, items, onNavigat
       geometry.dispose()
       renderer.dispose()
     }
-  }, [items])
+  }, [hasInteractiveSupport, items])
 
   if (!items.length) {
     return null
@@ -619,7 +618,6 @@ export default function LiquidGlassCarouselSection({ headingId, items, onNavigat
             <h3>{selectedItem.title}</h3>
             <span>{selectedItem.price}</span>
           </div>
-          <p>{selectedItem.copy}</p>
         </div>
 
         <div className="liquid-carousel-meta-side">

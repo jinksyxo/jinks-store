@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   createStoreBackup,
   downloadAdminFile,
+  generateShippingSpreadsheet,
   getCustomers,
   getStripeOrders,
   getStoreBackups,
+  getShippingSpreadsheets,
   getSharedShirtInventory,
   getDevPortalSession,
   loginToDevPortal,
@@ -12,6 +14,7 @@ import {
   updateCustomer,
   updateStripeOrder,
   updateSharedShirtInventory,
+  verifyDevPortalTwoFactorCode,
 } from '../lib/devPortalStore'
 
 const DEV_PORTAL_PAGES = [
@@ -19,6 +22,7 @@ const DEV_PORTAL_PAGES = [
   { href: '/dev/orders', label: 'orders' },
   { href: '/dev/customers', label: 'customers' },
   { href: '/dev/backups', label: 'store backups' },
+  { href: '/dev/shipping', label: 'shipping spreadsheets' },
 ]
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
@@ -101,6 +105,38 @@ function formatInventoryValues(inventory) {
   }, {})
 }
 
+function imageUrlFromProductImage(image) {
+  return typeof image === 'string' ? image : image?.url || ''
+}
+
+function normalizeImageDraft(image, index = 0) {
+  const imageUrl = imageUrlFromProductImage(image)
+
+  return {
+    name: typeof image === 'string' ? `Current image ${index + 1}` : image?.name || `Current image ${index + 1}`,
+    url: imageUrl,
+    color: COLOR_OPTIONS.some((color) => color.id === image?.color) ? image.color : '',
+    primary: Boolean(image?.primary),
+    secondary: Boolean(image?.secondary),
+  }
+}
+
+function normalizeImageDrafts(images) {
+  const drafts = (images || []).map(normalizeImageDraft)
+  const primaryIndex = drafts.findIndex((image) => image.primary)
+  const resolvedPrimaryIndex = primaryIndex >= 0 ? primaryIndex : 0
+  const secondaryIndex = drafts.findIndex((image, index) => index !== resolvedPrimaryIndex && image.secondary)
+  const fallbackSecondaryIndex = drafts.findIndex((_, index) => index !== resolvedPrimaryIndex)
+  const resolvedSecondaryIndex =
+    secondaryIndex >= 0 ? secondaryIndex : fallbackSecondaryIndex >= 0 ? fallbackSecondaryIndex : -1
+
+  return drafts.map((image, index) => ({
+    ...image,
+    primary: drafts.length > 0 && index === resolvedPrimaryIndex,
+    secondary: resolvedSecondaryIndex >= 0 && index === resolvedSecondaryIndex,
+  }))
+}
+
 function createInitialForm(defaultCategory) {
   const productType = defaultProductTypeForCategory(defaultCategory)
 
@@ -117,8 +153,12 @@ function createInitialForm(defaultCategory) {
     addToFeaturedCollection: false,
     addToUtahCollection: false,
     salePrice: '',
+    filmInventory: '',
     colors: ['black'],
     existingImages: [],
+    newImageColors: [],
+    newImagePrimaryIndex: null,
+    newImageSecondaryIndex: null,
     files: [],
   }
 }
@@ -141,8 +181,12 @@ function createFormFromProduct(product) {
     ),
     addToUtahCollection: Boolean(product.addToUtahCollection),
     salePrice: product.salePrice ? String(product.salePrice) : '',
+    filmInventory: String(product.filmInventory ?? 0),
     colors: [...(product.colors || ['black'])],
-    existingImages: [...(product.images || [])],
+    existingImages: normalizeImageDrafts(product.images || []),
+    newImageColors: [],
+    newImagePrimaryIndex: null,
+    newImageSecondaryIndex: null,
     files: [],
   }
 }
@@ -174,7 +218,10 @@ function summarizeInventory(product) {
     product.inventoryScope === 'shared-shirt'
       ? 'shared shirt stock'
       : 'inventory not tracked yet'
-  return [colorSummary || 'No colors selected', scopeSummary].join(' • ')
+  const filmSummary =
+    product.productType === 'shirt' ? `${Number(product.filmInventory || 0)} design film` : ''
+
+  return [colorSummary || 'No colors selected', scopeSummary, filmSummary].filter(Boolean).join(' • ')
 }
 
 function formatStripeAmount(amount, currency = 'usd') {
@@ -239,6 +286,7 @@ function validateForm(formState, options = {}) {
   const trimmedDescription = formState.description.trim()
   const numericPrice = Number(formState.price)
   const numericSalePrice = Number(formState.salePrice)
+  const numericFilmInventory = Number(formState.filmInventory || 0)
   const selectedFiles = formState.files
   const totalImageCount = formState.existingImages.length + selectedFiles.length
   const totalFileBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0)
@@ -269,6 +317,15 @@ function validateForm(formState, options = {}) {
 
   if (formState.productType !== 'merch' && !formState.allowedSizes.length) {
     errors.push('Select at least one allowed size.')
+  }
+
+  if (
+    formState.productType === 'shirt' &&
+    (!Number.isFinite(numericFilmInventory) ||
+      numericFilmInventory < 0 ||
+      !Number.isInteger(numericFilmInventory))
+  ) {
+    errors.push('Design film inventory must be a whole number zero or greater.')
   }
 
   if (formState.hasDeal) {
@@ -367,7 +424,7 @@ function UploadedProductList({
         <article className="dev-uploaded-card" key={product.id}>
           <img
             className="dev-uploaded-thumb"
-            src={product.images?.[0] || '/tee-mockup.png'}
+            src={imageUrlFromProductImage(product.images?.[0]) || '/tee-mockup.png'}
             alt={product.name}
           />
 
@@ -425,30 +482,32 @@ function UploadedProductList({
 }
 
 function OrdersList({ orders, onSaveOrder, savingOrderId }) {
-  const [drafts, setDrafts] = useState({})
+  const [draftOverrides, setDraftOverrides] = useState({})
   const [messages, setMessages] = useState({})
-
-  useEffect(() => {
-    setDrafts(
+  const orderDrafts = useMemo(
+    () =>
       orders.reduce((nextDrafts, order) => {
-        nextDrafts[order.sessionId] = createOrderDraft(order)
+        nextDrafts[order.sessionId] = {
+          ...createOrderDraft(order),
+          ...(draftOverrides[order.sessionId] || {}),
+        }
         return nextDrafts
       }, {}),
-    )
-  }, [orders])
+    [draftOverrides, orders],
+  )
 
   const updateDraftField = (sessionId, fieldName, value) => {
-    setDrafts((currentDrafts) => ({
+    setDraftOverrides((currentDrafts) => ({
       ...currentDrafts,
       [sessionId]: {
-        ...(currentDrafts[sessionId] || {}),
+        ...(currentDrafts[sessionId] || orderDrafts[sessionId] || {}),
         [fieldName]: value,
       },
     }))
   }
 
   const handleSave = async (sessionId) => {
-    const draft = drafts[sessionId]
+    const draft = orderDrafts[sessionId]
 
     if (!draft) {
       return
@@ -457,6 +516,11 @@ function OrdersList({ orders, onSaveOrder, savingOrderId }) {
     const didSave = await onSaveOrder(sessionId, draft)
 
     if (didSave) {
+      setDraftOverrides((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts }
+        delete nextDrafts[sessionId]
+        return nextDrafts
+      })
       setMessages((currentMessages) => ({
         ...currentMessages,
         [sessionId]: 'Fulfillment details saved.',
@@ -477,7 +541,7 @@ function OrdersList({ orders, onSaveOrder, savingOrderId }) {
       {orders.map((order) => (
         <article className="dev-order-card" key={order.sessionId}>
           {(() => {
-            const draft = drafts[order.sessionId] || createOrderDraft(order)
+            const draft = orderDrafts[order.sessionId]
             const isSaving = savingOrderId === order.sessionId
 
             return (
@@ -603,30 +667,32 @@ function CustomersList({
   onSaveCustomer,
   savingCustomerEmail,
 }) {
-  const [drafts, setDrafts] = useState({})
+  const [draftOverrides, setDraftOverrides] = useState({})
   const [messages, setMessages] = useState({})
-
-  useEffect(() => {
-    setDrafts(
+  const customerDrafts = useMemo(
+    () =>
       customers.reduce((nextDrafts, customer) => {
-        nextDrafts[customer.email] = createCustomerDraft(customer)
+        nextDrafts[customer.email] = {
+          ...createCustomerDraft(customer),
+          ...(draftOverrides[customer.email] || {}),
+        }
         return nextDrafts
       }, {}),
-    )
-  }, [customers])
+    [customers, draftOverrides],
+  )
 
   const updateDraftField = (customerEmail, fieldName, value) => {
-    setDrafts((currentDrafts) => ({
+    setDraftOverrides((currentDrafts) => ({
       ...currentDrafts,
       [customerEmail]: {
-        ...(currentDrafts[customerEmail] || {}),
+        ...(currentDrafts[customerEmail] || customerDrafts[customerEmail] || {}),
         [fieldName]: value,
       },
     }))
   }
 
   const handleSave = async (customerEmail) => {
-    const draft = drafts[customerEmail]
+    const draft = customerDrafts[customerEmail]
 
     if (!draft) {
       return
@@ -642,6 +708,11 @@ function CustomersList({
     })
 
     if (didSave) {
+      setDraftOverrides((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts }
+        delete nextDrafts[customerEmail]
+        return nextDrafts
+      })
       setMessages((currentMessages) => ({
         ...currentMessages,
         [customerEmail]: 'Customer saved.',
@@ -672,7 +743,7 @@ function CustomersList({
 
       <div className="dev-backup-list">
         {customers.map((customer) => {
-          const draft = drafts[customer.email] || createCustomerDraft(customer)
+          const draft = customerDrafts[customer.email]
           const isSaving = savingCustomerEmail === customer.email
 
           return (
@@ -767,21 +838,64 @@ function PasswordGate({
   isSubmitting,
   isPasswordVisible,
   onTogglePasswordVisibility,
+  twoFactorChallengeToken,
+  twoFactorCode,
+  onTwoFactorCodeChange,
+  onVerifyTwoFactorCode,
+  onCancelTwoFactor,
+  twoFactorError,
+  isVerifyingTwoFactorCode,
 }) {
+  const isTwoFactorStep = Boolean(twoFactorChallengeToken)
+
   return (
     <section className="notes-section route-section dev-lock">
       <div className="notes-copy">
         <p className="eyebrow">dev</p>
         <h2>product portal.</h2>
         <p>
-          This page now uses backend auth and a signed session cookie. Uploaded
-          products and image files are stored on disk by the server.
+          {isTwoFactorStep
+            ? 'Enter the 6-digit code from your authenticator app.'
+            : 'This page now uses backend auth and a signed session cookie. Uploaded products and image files are stored on disk by the server.'}
         </p>
       </div>
 
       <div className="newsletter-card dev-lock-card">
         {isChecking ? (
           <p className="dev-session-note">Checking admin session...</p>
+        ) : isTwoFactorStep ? (
+          <form className="dev-lock-form" onSubmit={onVerifyTwoFactorCode}>
+            <label className="dev-field">
+              <span>Authentication code</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={twoFactorCode}
+                onChange={(event) =>
+                  onTwoFactorCodeChange(event.target.value.replace(/\D/g, '').slice(0, 6))
+                }
+                autoFocus
+              />
+            </label>
+            {twoFactorError ? <p className="dev-form-error">{twoFactorError}</p> : null}
+            <button
+              className="button button-primary"
+              type="submit"
+              disabled={isVerifyingTwoFactorCode || twoFactorCode.length !== 6}
+            >
+              {isVerifyingTwoFactorCode ? 'Verifying...' : 'Verify code'}
+            </button>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={onCancelTwoFactor}
+              disabled={isVerifyingTwoFactorCode}
+            >
+              Use a different password
+            </button>
+          </form>
         ) : (
           <form className="dev-lock-form" onSubmit={onUnlock}>
             <label className="dev-field">
@@ -851,6 +965,10 @@ function DevPage({
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [isPasswordVisible, setIsPasswordVisible] = useState(false)
+  const [twoFactorChallengeToken, setTwoFactorChallengeToken] = useState(null)
+  const [twoFactorCode, setTwoFactorCode] = useState('')
+  const [twoFactorError, setTwoFactorError] = useState('')
+  const [isVerifyingTwoFactorCode, setIsVerifyingTwoFactorCode] = useState(false)
   const [formState, setFormState] = useState(() => createInitialForm(defaultCategory))
   const [editingProductId, setEditingProductId] = useState(null)
   const [shirtInventory, setShirtInventory] = useState(() => createBlankInventory())
@@ -871,24 +989,35 @@ function DevPage({
   const [backupMessage, setBackupMessage] = useState('')
   const [isCreatingBackup, setIsCreatingBackup] = useState(false)
   const [isExportingStore, setIsExportingStore] = useState(false)
+  const [shippingSpreadsheets, setShippingSpreadsheets] = useState([])
+  const [pendingShippingOrderCount, setPendingShippingOrderCount] = useState(0)
+  const [shippingSpreadsheetError, setShippingSpreadsheetError] = useState('')
+  const [shippingSpreadsheetMessage, setShippingSpreadsheetMessage] = useState('')
+  const [isGeneratingShippingSpreadsheet, setIsGeneratingShippingSpreadsheet] = useState(false)
 
   const newImagePreviews = useMemo(
     () =>
-      formState.files.map((file) => ({
+      formState.files.map((file, index) => ({
         name: file.name,
         url: URL.createObjectURL(file),
+        color: formState.newImageColors[index] || '',
+        primary: formState.newImagePrimaryIndex === index,
+        secondary: formState.newImageSecondaryIndex === index,
       })),
-    [formState.files],
+    [formState.files, formState.newImageColors, formState.newImagePrimaryIndex, formState.newImageSecondaryIndex],
   )
 
   const imagePreviews = useMemo(
     () => [
-      ...formState.existingImages.map((url, index) => ({
-        id: `existing-${url}-${index}`,
+      ...formState.existingImages.map((image, index) => ({
+        id: `existing-${image.url}-${index}`,
         kind: 'existing',
         index,
-        name: `Current image ${index + 1}`,
-        url,
+        name: image.name || `Current image ${index + 1}`,
+        url: image.url,
+        color: image.color || '',
+        primary: Boolean(image.primary),
+        secondary: Boolean(image.secondary),
       })),
       ...newImagePreviews.map((preview, index) => ({
         ...preview,
@@ -1055,6 +1184,36 @@ function DevPage({
   }, [isUnlocked])
 
   useEffect(() => {
+    if (!isUnlocked) {
+      return undefined
+    }
+
+    let isActive = true
+
+    getShippingSpreadsheets()
+      .then(({ spreadsheets, pendingOrderCount }) => {
+        if (!isActive) {
+          return
+        }
+
+        setShippingSpreadsheets(spreadsheets)
+        setPendingShippingOrderCount(pendingOrderCount)
+        setShippingSpreadsheetError('')
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return
+        }
+
+        setShippingSpreadsheetError(error.message || 'Shipping spreadsheets could not be loaded.')
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [isUnlocked])
+
+  useEffect(() => {
     return () => {
       newImagePreviews.forEach((preview) => URL.revokeObjectURL(preview.url))
     }
@@ -1092,7 +1251,21 @@ function DevPage({
 
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files ?? [])
-    updateField('files', selectedFiles)
+    setFormState((currentState) => ({
+      ...currentState,
+      files: selectedFiles,
+      newImageColors: selectedFiles.map((_, index) => currentState.newImageColors[index] || ''),
+      newImagePrimaryIndex:
+        currentState.existingImages.some((image) => image.primary) ||
+        !selectedFiles.length
+          ? null
+          : 0,
+      newImageSecondaryIndex:
+        currentState.existingImages.some((image) => image.secondary) ||
+        selectedFiles.length < 2
+          ? null
+          : 1,
+    }))
   }
 
   const handleCategoryChange = (nextCategory) => {
@@ -1147,16 +1320,91 @@ function DevPage({
   }
 
   const handleRemoveExistingImage = (imageIndex) => {
-    setFormState((currentState) => ({
-      ...currentState,
-      existingImages: removeImageAtIndex(currentState.existingImages, imageIndex),
-    }))
+    setFormState((currentState) => {
+      const nextExistingImages = normalizeImageDrafts(
+        removeImageAtIndex(currentState.existingImages, imageIndex),
+      )
+
+      return {
+        ...currentState,
+        existingImages: nextExistingImages,
+        newImagePrimaryIndex:
+          nextExistingImages.length || !currentState.files.length
+            ? currentState.newImagePrimaryIndex
+            : 0,
+        newImageSecondaryIndex:
+          nextExistingImages.length || currentState.files.length < 2
+            ? currentState.newImageSecondaryIndex
+            : 1,
+      }
+    })
   }
 
   const handleRemoveNewImage = (imageIndex) => {
+    setFormState((currentState) => {
+      const nextFiles = removeImageAtIndex(currentState.files, imageIndex)
+      const nextColors = removeImageAtIndex(currentState.newImageColors, imageIndex)
+      const shiftIndex = (currentIndex) => {
+        if (!Number.isInteger(currentIndex)) {
+          return null
+        }
+
+        if (currentIndex === imageIndex) {
+          return null
+        }
+
+        return currentIndex > imageIndex ? currentIndex - 1 : currentIndex
+      }
+
+      return {
+        ...currentState,
+        files: nextFiles,
+        newImageColors: nextColors,
+        newImagePrimaryIndex: shiftIndex(currentState.newImagePrimaryIndex),
+        newImageSecondaryIndex: shiftIndex(currentState.newImageSecondaryIndex),
+      }
+    })
+  }
+
+  const handleImageColorChange = (imageKind, imageIndex, color) => {
+    setFormState((currentState) => {
+      if (imageKind === 'existing') {
+        return {
+          ...currentState,
+          existingImages: currentState.existingImages.map((image, index) =>
+            index === imageIndex ? { ...image, color } : image,
+          ),
+        }
+      }
+
+      return {
+        ...currentState,
+        newImageColors: currentState.files.map((_, index) =>
+          index === imageIndex ? color : currentState.newImageColors[index] || '',
+        ),
+      }
+    })
+  }
+
+  const handlePrimaryImageChange = (imageKind, imageIndex) => {
     setFormState((currentState) => ({
       ...currentState,
-      files: removeImageAtIndex(currentState.files, imageIndex),
+      existingImages: currentState.existingImages.map((image, index) => ({
+        ...image,
+        primary: imageKind === 'existing' && index === imageIndex,
+      })),
+      newImagePrimaryIndex: imageKind === 'new' ? imageIndex : null,
+    }))
+  }
+
+  const handleSecondaryImageChange = (imageKind, imageIndex) => {
+    setFormState((currentState) => ({
+      ...currentState,
+      existingImages: currentState.existingImages.map((image, index) => ({
+        ...image,
+        secondary: imageKind === 'existing' && index === imageIndex,
+      })),
+      newImageSecondaryIndex: imageKind === 'new' ? imageIndex : null,
     }))
   }
 
@@ -1171,7 +1419,16 @@ function DevPage({
     setIsAuthenticating(true)
 
     try {
-      await loginToDevPortal(password)
+      const result = await loginToDevPortal(password)
+
+      if (result.requiresTwoFactor) {
+        setTwoFactorChallengeToken(result.challengeToken)
+        setTwoFactorError('')
+        setTwoFactorCode('')
+        setPassword('')
+        return
+      }
+
       setIsUnlocked(true)
       setPassword('')
     } catch (error) {
@@ -1179,6 +1436,45 @@ function DevPage({
     } finally {
       setIsAuthenticating(false)
     }
+  }
+
+  const handleVerifyTwoFactorCode = async (event) => {
+    event.preventDefault()
+    setTwoFactorError('')
+    setIsVerifyingTwoFactorCode(true)
+
+    try {
+      const result = await verifyDevPortalTwoFactorCode(twoFactorChallengeToken, twoFactorCode)
+
+      if (result.verified) {
+        setIsUnlocked(true)
+        setTwoFactorChallengeToken(null)
+        setTwoFactorCode('')
+        return
+      }
+
+      setTwoFactorChallengeToken(result.challengeToken)
+      setTwoFactorCode('')
+      setTwoFactorError(
+        result.attemptsRemaining > 0
+          ? `${result.error} ${result.attemptsRemaining} attempt${
+              result.attemptsRemaining === 1 ? '' : 's'
+            } left.`
+          : result.error,
+      )
+    } catch (error) {
+      setTwoFactorChallengeToken(null)
+      setTwoFactorCode('')
+      setPasswordError(error.message || 'That code entry expired. Enter the password again.')
+    } finally {
+      setIsVerifyingTwoFactorCode(false)
+    }
+  }
+
+  const handleCancelTwoFactor = () => {
+    setTwoFactorChallengeToken(null)
+    setTwoFactorCode('')
+    setTwoFactorError('')
   }
 
   const handleLogout = async () => {
@@ -1191,6 +1487,8 @@ function DevPage({
       setIsLoggingOut(false)
       setSaveMessage('')
       setFormErrors([])
+      setTwoFactorChallengeToken(null)
+      setTwoFactorCode('')
     }
   }
 
@@ -1218,10 +1516,13 @@ function DevPage({
       setInventoryMessage('Shared shirt inventory updated.')
 
       const images = await Promise.all(
-        formState.files.map(async (file) => ({
+        formState.files.map(async (file, index) => ({
           name: file.name,
           type: file.type,
           size: file.size,
+          color: formState.newImageColors[index] || '',
+          primary: formState.newImagePrimaryIndex === index,
+          secondary: formState.newImageSecondaryIndex === index,
           dataUrl: await readFileAsDataUrl(file),
         })),
       )
@@ -1240,8 +1541,14 @@ function DevPage({
         addToFeaturedCollection: formState.addToFeaturedCollection,
         addToUtahCollection: formState.addToUtahCollection,
         salePrice: formState.hasDeal ? Number(formState.salePrice) : null,
+        filmInventory: formState.productType === 'shirt' ? Number(formState.filmInventory || 0) : 0,
         colors: [...formState.colors],
-        existingImages: [...formState.existingImages],
+        existingImages: formState.existingImages.map((image) => ({
+          url: image.url,
+          color: image.color || '',
+          primary: Boolean(image.primary),
+          secondary: Boolean(image.secondary),
+        })),
         images,
       }
 
@@ -1362,6 +1669,49 @@ function DevPage({
     }
   }
 
+  const handleGenerateShippingSpreadsheet = async () => {
+    setIsGeneratingShippingSpreadsheet(true)
+    setShippingSpreadsheetError('')
+    setShippingSpreadsheetMessage('')
+
+    try {
+      const result = await generateShippingSpreadsheet()
+
+      if (!result.created) {
+        setShippingSpreadsheetMessage(
+          result.email?.sent
+            ? 'No new paid orders to include yet. Email alert sent.'
+            : `No new paid orders to include yet. Email alert was not sent${
+                result.email?.error ? ` (${result.email.error})` : ''
+              }.`,
+        )
+        return
+      }
+
+      const { spreadsheets, pendingOrderCount } = await getShippingSpreadsheets()
+      setShippingSpreadsheets(spreadsheets)
+      setPendingShippingOrderCount(pendingOrderCount)
+
+      const orderNoun = result.orderCount === 1 ? 'order' : 'orders'
+
+      if (result.email?.sent) {
+        setShippingSpreadsheetMessage(
+          `${result.fileName} created with ${result.orderCount} ${orderNoun}. Email alert sent.`,
+        )
+      } else {
+        setShippingSpreadsheetMessage(
+          `${result.fileName} created with ${result.orderCount} ${orderNoun}. Email alert was not sent${
+            result.email?.error ? ` (${result.email.error})` : ''
+          }.`,
+        )
+      }
+    } catch (error) {
+      setShippingSpreadsheetError(error.message || 'The shipping spreadsheet could not be generated.')
+    } finally {
+      setIsGeneratingShippingSpreadsheet(false)
+    }
+  }
+
   const handleExportCustomers = async () => {
     setIsExportingCustomers(true)
     setCustomersError('')
@@ -1406,7 +1756,8 @@ function DevPage({
   const isOrdersPage = pathname === '/dev/orders'
   const isCustomersPage = pathname === '/dev/customers'
   const isBackupsPage = pathname === '/dev/backups'
-  const isProductsPage = !isOrdersPage && !isCustomersPage && !isBackupsPage
+  const isShippingPage = pathname === '/dev/shipping'
+  const isProductsPage = !isOrdersPage && !isCustomersPage && !isBackupsPage && !isShippingPage
 
   const pageTitle = isOrdersPage
     ? 'orders.'
@@ -1414,9 +1765,11 @@ function DevPage({
       ? 'customers.'
       : isBackupsPage
         ? 'store backups.'
-        : editingProductId !== null
-          ? 'edit product.'
-          : 'upload products.'
+        : isShippingPage
+          ? 'shipping spreadsheets.'
+          : editingProductId !== null
+            ? 'edit product.'
+            : 'upload products.'
 
   const pageDescription = isOrdersPage
     ? 'Paid checkout sessions recorded by the fulfillment webhook appear here so you can review sales and update shipping progress.'
@@ -1424,7 +1777,9 @@ function DevPage({
       ? 'Stripe checkout emails are stored as customer records with editable notes, tags, and newsletter preference.'
       : isBackupsPage
         ? 'Download a JSON snapshot of the current store or create a timestamped SQLite backup under the server data folder.'
-        : 'Uploads are now handled by the backend. Images are stored on disk, product data is written to a JSON store, and the admin session is kept in a signed cookie.'
+        : isShippingPage
+          ? 'A bulk-upload spreadsheet of new paid orders is generated automatically every Monday, Wednesday, and Friday morning, and emailed to jinks@matsumotoshop.com. Each order appears on exactly one spreadsheet.'
+          : 'Uploads are now handled by the backend. Images are stored on disk, product data is written to a JSON store, and the admin session is kept in a signed cookie.'
 
   if (!isUnlocked) {
     return (
@@ -1437,6 +1792,13 @@ function DevPage({
         isSubmitting={isAuthenticating}
         isPasswordVisible={isPasswordVisible}
         onTogglePasswordVisibility={() => setIsPasswordVisible((current) => !current)}
+        twoFactorChallengeToken={twoFactorChallengeToken}
+        twoFactorCode={twoFactorCode}
+        onTwoFactorCodeChange={setTwoFactorCode}
+        onVerifyTwoFactorCode={handleVerifyTwoFactorCode}
+        onCancelTwoFactor={handleCancelTwoFactor}
+        twoFactorError={twoFactorError}
+        isVerifyingTwoFactorCode={isVerifyingTwoFactorCode}
       />
     )
   }
@@ -1579,6 +1941,69 @@ function DevPage({
         </div>
       ) : null}
 
+      {isShippingPage ? (
+        <div className="newsletter-card dev-backups-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">shipping spreadsheets</p>
+            <h3>Bulk label upload files</h3>
+            <p>
+              A new spreadsheet generates automatically every Monday, Wednesday, and Friday
+              morning with any paid orders not already on a previous spreadsheet. Use "Generate
+              now" to test on demand instead of waiting for the schedule.
+            </p>
+            <p>
+              {pendingShippingOrderCount} new paid order{pendingShippingOrderCount === 1 ? '' : 's'}{' '}
+              waiting for the next spreadsheet.
+            </p>
+          </div>
+
+          <div className="dev-backup-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={handleGenerateShippingSpreadsheet}
+              disabled={isGeneratingShippingSpreadsheet}
+            >
+              {isGeneratingShippingSpreadsheet ? 'Generating...' : 'Generate now'}
+            </button>
+          </div>
+
+          {shippingSpreadsheetError ? (
+            <p className="dev-form-error">{shippingSpreadsheetError}</p>
+          ) : null}
+          {shippingSpreadsheetMessage ? (
+            <p className="dev-form-success">{shippingSpreadsheetMessage}</p>
+          ) : null}
+
+          <div className="dev-backup-list">
+            {shippingSpreadsheets.length ? (
+              shippingSpreadsheets.map((spreadsheet) => (
+                <div className="dev-backup-item" key={spreadsheet.fileName}>
+                  <div>
+                    <strong>{spreadsheet.fileName}</strong>
+                    <p>
+                      {formatOrderTimestamp(spreadsheet.createdAt)} • {spreadsheet.orderCount} order
+                      {spreadsheet.orderCount === 1 ? '' : 's'} • {formatBytes(spreadsheet.size)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => downloadAdminFile(spreadsheet.downloadUrl, spreadsheet.fileName)}
+                  >
+                    Download
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="dev-uploaded-empty">
+                <p>No shipping spreadsheets created yet.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {isProductsPage ? (
         <div className="dev-page-grid">
           <form className="dev-form" onSubmit={handleSubmit}>
@@ -1629,6 +2054,21 @@ function DevPage({
                   ))}
                 </select>
               </label>
+
+              {formState.productType === 'shirt' ? (
+                <label className="dev-field">
+                  <span>Design film inventory</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    inputMode="numeric"
+                    value={formState.filmInventory}
+                    onChange={(event) => updateField('filmInventory', event.target.value)}
+                  />
+                  <small>Each tee purchase uses one film for this design.</small>
+                </label>
+              ) : null}
 
               <label className="dev-field dev-field-wide">
                 <span>Description</span>
@@ -1767,6 +2207,42 @@ function DevPage({
                 <div className="dev-image-preview" key={preview.id}>
                   <img src={preview.url} alt={preview.name} />
                   <span>{preview.name}</span>
+                  <label className="dev-field dev-image-color-field">
+                    <span>Image color</span>
+                    <select
+                      value={preview.color || ''}
+                      onChange={(event) =>
+                        handleImageColorChange(preview.kind, preview.index, event.target.value)
+                      }
+                    >
+                      <option value="">unassigned</option>
+                      {COLOR_OPTIONS.map((color) => (
+                        <option key={color.id} value={color.id}>
+                          {color.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="dev-image-role-controls">
+                    <label className="dev-toggle">
+                      <input
+                        type="radio"
+                        name="primary-product-image"
+                        checked={preview.primary}
+                        onChange={() => handlePrimaryImageChange(preview.kind, preview.index)}
+                      />
+                      <span>Primary preview</span>
+                    </label>
+                    <label className="dev-toggle">
+                      <input
+                        type="radio"
+                        name="secondary-product-image"
+                        checked={preview.secondary}
+                        onChange={() => handleSecondaryImageChange(preview.kind, preview.index)}
+                      />
+                      <span>Hover preview</span>
+                    </label>
+                  </div>
                   <button
                     type="button"
                     className="button button-secondary"

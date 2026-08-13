@@ -29,3 +29,4 @@ server/data/*.sqlite-*
 server/data/shirt-inventory.json
 server/data/stripe-orders.json
 server/data/uploads/
+server/data/shipping-spreadsheets/

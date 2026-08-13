@@ -9,7 +9,7 @@ import {
   useCheckoutElements,
 } from '@stripe/react-stripe-js/checkout'
 import { createCheckoutSession, getCheckoutSession } from '../lib/devPortalStore'
-import { buildEstimatedOrderSummary, estimateStandardShippingCents } from '../lib/orderSummary'
+import { estimateStandardShippingCents } from '../lib/orderSummary'
 
 function buildCheckoutItems(cart) {
   return cart.map((item) => ({
@@ -179,10 +179,15 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
   const selectedShippingCents =
     Number(checkout.shipping?.shippingOption?.minorUnitsAmount || 0) ||
     estimateStandardShippingCents(subtotalCents)
-  const orderSummary = buildEstimatedOrderSummary(subtotalCents, selectedShippingCents)
+  const taxCents = Number(
+    checkout.total?.taxExclusive?.minorUnitsAmount || checkout.total?.taxInclusive?.minorUnitsAmount || 0,
+  )
+  const totalCents =
+    Number(checkout.total?.total?.minorUnitsAmount || 0) ||
+    subtotalCents + selectedShippingCents + taxCents
   const shippingLabel =
     checkout.shipping?.shippingOption?.displayName ||
-    (orderSummary.shippingCents === 0 ? 'Free domestic shipping' : 'Standard shipping')
+    (selectedShippingCents === 0 ? 'Free domestic shipping' : 'Standard shipping')
   const sectionErrors = {
     contact: 'Enter an email address to continue.',
     shipping:
@@ -384,7 +389,7 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
       <aside className="newsletter-card checkout-summary-panel">
         <p className="panel-label">order summary</p>
         <div className="checkout-summary-total">
-          <strong>{formatCurrency(orderSummary.totalCents / 100)}</strong>
+          <strong>{formatCurrency(totalCents / 100)}</strong>
           <span>{checkout.lineItems.length} item{checkout.lineItems.length === 1 ? '' : 's'}</span>
         </div>
         <div className="checkout-line-items">
@@ -402,23 +407,23 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
         <div className="order-summary-breakdown">
           <div className="order-summary-row">
             <span>Subtotal</span>
-            <strong>{formatCurrency(orderSummary.subtotalCents / 100)}</strong>
+            <strong>{formatCurrency(subtotalCents / 100)}</strong>
           </div>
           <div className="order-summary-row">
             <span>{shippingLabel}</span>
-            <strong>{formatCurrency(orderSummary.shippingCents / 100)}</strong>
+            <strong>{formatCurrency(selectedShippingCents / 100)}</strong>
           </div>
           <div className="order-summary-row">
-            <span>Estimated tax (7.25%)</span>
-            <strong>{formatCurrency(orderSummary.taxCents / 100)}</strong>
+            <span>Tax</span>
+            <strong>{formatCurrency(taxCents / 100)}</strong>
           </div>
           <div className="order-summary-row order-summary-row-total">
             <span>Total</span>
-            <strong>{formatCurrency(orderSummary.totalCents / 100)}</strong>
+            <strong>{formatCurrency(totalCents / 100)}</strong>
           </div>
         </div>
         <p className="checkout-summary-note">
-          The tax line is a 7.25% placeholder for now. Shipping updates if a different rate is selected.
+          Shipping and tax update live from Stripe as the address and selected rate change.
         </p>
       </aside>
     </div>
@@ -426,15 +431,25 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
 }
 
 function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
-  const [session, setSession] = useState(null)
-  const [error, setError] = useState('')
-  const [isLoading, setIsLoading] = useState(true)
+  const [sessionState, setSessionState] = useState({
+    requestKey: '',
+    session: null,
+    error: '',
+  })
   const onCheckoutCompleteRef = useRef(onCheckoutComplete)
   const hasCompletedRef = useRef(false)
   const sessionId =
     typeof window === 'undefined'
       ? ''
       : new URLSearchParams(window.location.search).get('session_id') || ''
+  const requestKey = sessionId || '__missing__'
+  const resolvedState = sessionState.requestKey === requestKey ? sessionState : null
+  const session = resolvedState?.session || null
+  const error = !sessionId
+    ? 'A Stripe session id was not found in the return URL.'
+    : resolvedState?.error || ''
+  const isLoading = Boolean(sessionId) && !error && !session
+  const [currentTimestamp] = useState(() => Date.now())
 
   useEffect(() => {
     onCheckoutCompleteRef.current = onCheckoutComplete
@@ -442,14 +457,10 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
 
   useEffect(() => {
     if (!sessionId) {
-      setIsLoading(false)
-      setError('A Stripe session id was not found in the return URL.')
       return
     }
 
     let isActive = true
-    setIsLoading(true)
-    setError('')
 
     getCheckoutSession(sessionId)
       .then((loadedSession) => {
@@ -457,7 +468,11 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
           return
         }
 
-        setSession(loadedSession)
+        setSessionState({
+          requestKey,
+          session: loadedSession,
+          error: '',
+        })
 
         const isPaid =
           loadedSession.status === 'complete' &&
@@ -474,18 +489,17 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
           return
         }
 
-        setError(sessionError.message || 'Checkout status could not be loaded.')
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsLoading(false)
-        }
+        setSessionState({
+          requestKey,
+          session: null,
+          error: sessionError.message || 'Checkout status could not be loaded.',
+        })
       })
 
     return () => {
       isActive = false
     }
-  }, [sessionId])
+  }, [requestKey, sessionId])
 
   if (isLoading) {
     return (
@@ -632,7 +646,10 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
     )
   }
 
-  if (session.status === 'expired' || (session.expiresAt && session.expiresAt <= Date.now())) {
+  const hasExpired =
+    session.status === 'expired' || (session.expiresAt && session.expiresAt <= currentTimestamp)
+
+  if (hasExpired) {
     return (
       <CheckoutStatus
         title="checkout expired."
@@ -697,10 +714,11 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
 }
 
 export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mode = 'live' }) {
-  const [checkoutSession, setCheckoutSession] = useState(null)
-  const [stripePromise, setStripePromise] = useState(null)
-  const [isPreparing, setIsPreparing] = useState(false)
-  const [error, setError] = useState('')
+  const [checkoutState, setCheckoutState] = useState({
+    requestKey: '',
+    session: null,
+    error: '',
+  })
   const [completion, setCompletion] = useState(null)
   const onCheckoutCompleteRef = useRef(onCheckoutComplete)
   const hasCompletedRef = useRef(false)
@@ -713,19 +731,25 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
         ''
   const checkoutItems = buildCheckoutItems(cart)
   const checkoutItemsKey = JSON.stringify(checkoutItems)
+  const requestKey =
+    mode !== 'live' || completion
+      ? ''
+      : resumeSessionId
+        ? `resume:${resumeSessionId}`
+        : cart.length
+          ? `new:${checkoutItemsKey}`
+          : ''
+  const resolvedCheckoutState = checkoutState.requestKey === requestKey ? checkoutState : null
+  const checkoutSession = resolvedCheckoutState?.session || null
+  const error = resolvedCheckoutState?.error || ''
+  const isPreparing = Boolean(requestKey) && !error && !checkoutSession
+  const stripePromise = checkoutSession?.publishableKey
+    ? loadStripe(checkoutSession.publishableKey)
+    : null
 
   useEffect(() => {
     onCheckoutCompleteRef.current = onCheckoutComplete
   }, [onCheckoutComplete])
-
-  useEffect(() => {
-    if (!checkoutSession?.publishableKey) {
-      setStripePromise(null)
-      return
-    }
-
-    setStripePromise(loadStripe(checkoutSession.publishableKey))
-  }, [checkoutSession])
 
   useEffect(() => {
     if (mode !== 'live' || !resumeSessionId) {
@@ -733,8 +757,6 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
     }
 
     let isActive = true
-    setIsPreparing(true)
-    setError('')
 
     getCheckoutSession(resumeSessionId)
       .then((session) => {
@@ -759,14 +781,22 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
         }
 
         if (session.status !== 'open' || !session.clientSecret || !session.publishableKey) {
-          setError('This checkout session can no longer be resumed. Return to the cart and start again.')
+          setCheckoutState({
+            requestKey,
+            session: null,
+            error: 'This checkout session can no longer be resumed. Return to the cart and start again.',
+          })
           return
         }
 
-        setCheckoutSession({
-          sessionId: session.sessionId,
-          clientSecret: session.clientSecret,
-          publishableKey: session.publishableKey,
+        setCheckoutState({
+          requestKey,
+          session: {
+            sessionId: session.sessionId,
+            clientSecret: session.clientSecret,
+            publishableKey: session.publishableKey,
+          },
+          error: '',
         })
       })
       .catch((sessionError) => {
@@ -774,18 +804,17 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
           return
         }
 
-        setError(sessionError.message || 'Checkout status could not be loaded.')
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsPreparing(false)
-        }
+        setCheckoutState({
+          requestKey,
+          session: null,
+          error: sessionError.message || 'Checkout status could not be loaded.',
+        })
       })
 
     return () => {
       isActive = false
     }
-  }, [mode, resumeSessionId])
+  }, [mode, requestKey, resumeSessionId])
 
   useEffect(() => {
     if (mode !== 'live' || !cart.length || resumeSessionId || completion) {
@@ -794,9 +823,6 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
 
     const items = JSON.parse(checkoutItemsKey)
     let isActive = true
-    setIsPreparing(true)
-    setError('')
-    setCheckoutSession(null)
 
     createCheckoutSession(items)
       .then((session) => {
@@ -804,25 +830,28 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
           return
         }
 
-        setCheckoutSession(session)
+        setCheckoutState({
+          requestKey,
+          session,
+          error: '',
+        })
       })
       .catch((checkoutError) => {
         if (!isActive) {
           return
         }
 
-        setError(checkoutError.message || 'Checkout could not be initialized.')
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsPreparing(false)
-        }
+        setCheckoutState({
+          requestKey,
+          session: null,
+          error: checkoutError.message || 'Checkout could not be initialized.',
+        })
       })
 
     return () => {
       isActive = false
     }
-  }, [cart.length, checkoutItemsKey, completion, mode, resumeSessionId])
+  }, [cart.length, checkoutItemsKey, completion, mode, requestKey, resumeSessionId])
 
   const handlePaymentComplete = (session) => {
     setCompletion({

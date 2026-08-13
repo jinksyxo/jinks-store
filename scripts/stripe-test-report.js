@@ -32,7 +32,9 @@ function loadEnvFile(filePath) {
         process.env[key] = value
       }
     })
-  } catch {}
+  } catch {
+    // Env files are optional for local inspection.
+  }
 }
 
 loadEnvFile(path.join(rootDir, '.env'))

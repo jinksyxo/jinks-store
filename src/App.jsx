@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import cartLogo from '../logo asset/cart-logo.png'
 import CheckoutPage from './components/CheckoutPage'
@@ -11,6 +11,7 @@ import {
   getPublicShirtInventory,
   getStoredProducts,
   saveStoredProduct,
+  subscribeToNewsletter,
   updateStoredProduct,
 } from './lib/devPortalStore'
 import { buildEstimatedOrderSummary, FREE_SHIPPING_THRESHOLD_CENTS } from './lib/orderSummary'
@@ -116,17 +117,31 @@ const featuredFallbackItems = [
 ]
 
 const tickerItems = [
-  'free domestic shipping over $100',
+  'free domestic shipping over $65',
   'new drop every two weeks',
   'hand-printed in small runs',
   'limited stock once live',
 ]
 
 const tickerLoopItems = Array.from({ length: 3 }, () => tickerItems).flat()
+const ARRIVING_SOON_CATEGORY_PATHS = new Set(['/dress-shirts', '/bottoms', '/other-merchandise'])
+const arrivingSoonCopy = 'arriving soon! subscribe to our newsletter to be kept up-to-date on new arrivals.'
+
+const teeSizeGuideColumns = ['S', 'M', 'L', 'XL', '2XL']
+const teeSizeGuideRows = [
+  { label: 'Chest', values: ['18', '20', '22', '24', '26'] },
+  { label: 'Chest Width (Laid Flat)', values: ['18', '20', '22', '24', '26'] },
+  { label: 'Body Length Tolerance', values: ['-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1'] },
+  { label: 'Chest Tolerance', values: ['-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1'] },
+  { label: 'Body Length', values: ['28', '29', '30', '31', '32'] },
+  { label: 'Sleeve Length', values: ['15 5/8', '17', '18 1/2', '20', '21 1/2'] },
+  { label: 'Full Body Length', values: ['28', '29', '30', '31', '32'] },
+  { label: 'Body Width', values: ['18', '20', '22', '24', '26'] },
+]
 
 const merchPageContent = {
   '/tees': {
-    eyebrow: 'category one',
+    eyebrow: '',
     title: 'tees',
     intro:
       'Use this page for the core shirt line: standard logo tees, art tees, and the main print runs that define the season.',
@@ -208,7 +223,7 @@ const merchPageContent = {
     ],
   },
   '/other-merchandise': {
-    eyebrow: 'category four',
+    eyebrow: '',
     title: 'other merchandise',
     intro:
       'A holding page for posters, hats, totes, small print objects, and whatever else belongs in the wider Matsumoto universe.',
@@ -244,63 +259,6 @@ const merchPageContent = {
       },
     ],
   },
-}
-
-const aboutContent = {
-  title: 'about',
-  intro:
-    'Matsumoto is built around a map-like shopping experience and a restrained visual language that lets the product and layout do the talking.',
-  points: [
-    {
-      kicker: '01',
-      title: 'Build a clear product world',
-      copy:
-        'Each category should feel connected, but distinct enough to justify its own page and its own rhythm.',
-    },
-    {
-      kicker: '02',
-      title: 'Keep photography disciplined',
-      copy:
-        'Good garment photos will matter more than adding more UI or more content blocks everywhere.',
-    },
-    {
-      kicker: '03',
-      title: 'Let the design stay sparse',
-      copy:
-        'The map, typography, and category pages are strongest when they are not overloaded with secondary decoration.',
-    },
-  ],
-  notes: [
-    'Use this page later for the real brand story, timeline, or design philosophy.',
-    'If you start making collections or releases by season, this can become the place to explain that structure.',
-    'You can also use it for sizing philosophy, manufacturing notes, or the meaning behind the label.',
-  ],
-}
-
-const contactContent = {
-  title: 'contact',
-  intro:
-    'A dedicated contact page for wholesale questions, custom print inquiries, sizing help, and press or collaboration requests.',
-  panels: [
-    {
-      kicker: 'general',
-      title: 'jinks@matsumotoshop.com',
-      copy:
-        'Use this inbox for general store questions, collaboration requests, and customer support.',
-    },
-    {
-      kicker: 'wholesale',
-      title: 'Stockist and bulk inquiries',
-      copy:
-        'Use this block later for wholesale lead times, minimums, or a separate inquiry address if you need one.',
-    },
-    {
-      kicker: 'support',
-      title: 'Shipping and order help',
-      copy:
-        'This section can hold return policy links, support hours, or a small contact form once you add real store operations.',
-    },
-  ],
 }
 
 const faqContent = [
@@ -941,6 +899,44 @@ function cartUnitPrice(item) {
   return item.hasDeal && item.salePrice ? item.salePrice : item.price
 }
 
+function imageUrlFromProductImage(image) {
+  return typeof image === 'string' ? image : image?.url || ''
+}
+
+function primaryProductImage(product) {
+  return product?.images?.find((image) => image?.primary) || product?.images?.[0] || null
+}
+
+function findPrimaryImageIndex(productImages) {
+  const primaryIndex = productImages.findIndex((image) => image?.primary)
+  return primaryIndex >= 0 ? primaryIndex : 0
+}
+
+function findColorImageIndex(productImages, colors, color) {
+  const colorIndex = colors.indexOf(color)
+  const assignedColorIndex = productImages.findIndex((image) => image?.color === color)
+
+  if (assignedColorIndex >= 0) {
+    return assignedColorIndex
+  }
+
+  const colorTerms = String(color || '')
+    .split('-')
+    .flatMap((part) => [part, part.replace('grey', 'gray'), part.replace('gray', 'grey')])
+    .filter(Boolean)
+
+  const filenameIndex = productImages.findIndex((image) => {
+    const imageUrl = imageUrlFromProductImage(image).toLowerCase()
+    return colorTerms.some((term) => imageUrl.includes(term.toLowerCase()))
+  })
+
+  if (filenameIndex >= 0) {
+    return filenameIndex
+  }
+
+  return colorIndex >= 0 && colorIndex < productImages.length ? colorIndex : 0
+}
+
 function getAvailableQuantity(product, shirtInventory, color, size) {
   if (product.inventoryScope !== 'shared-shirt') {
     return null
@@ -950,7 +946,10 @@ function getAvailableQuantity(product, shirtInventory, color, size) {
     return null
   }
 
-  return Number(shirtInventory?.[color]?.[size] ?? 0)
+  const blankQuantity = Number(shirtInventory?.[color]?.[size] ?? 0)
+  const filmQuantity = Number(product.filmInventory ?? 0)
+
+  return Math.min(blankQuantity, filmQuantity)
 }
 
 function formatCurrency(value) {
@@ -985,7 +984,7 @@ function buildCollectionItems(customProducts, collectionKey, fallbackItems) {
       ? `${formatCurrency(product.salePrice)} sale`
       : formatCurrency(product.price),
     copy: product.description,
-    image: product.images?.[0] || '/tee-mockup.png',
+    image: imageUrlFromProductImage(primaryProductImage(product)) || '/tee-mockup.png',
     accent: formatCategoryLabel(product.category),
   }))
 }
@@ -1188,7 +1187,6 @@ function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
                         <h3>{item.title}</h3>
                         <span>{item.price}</span>
                       </div>
-                      <p>{item.copy}</p>
                       <span className="featured-accent">{item.accent}</span>
                     </div>
                   </article>
@@ -1205,7 +1203,6 @@ function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
                       <h3>{item.title}</h3>
                       <span>{item.price}</span>
                     </div>
-                    <p>{item.copy}</p>
                     <span className="featured-accent">{item.accent}</span>
                   </div>
                 </article>
@@ -1257,14 +1254,80 @@ function MapHome({ featuredItems, utahItems, onNavigate }) {
   )
 }
 
-function CategoryPage({ content, onNavigate }) {
+function NewsletterSignupForm() {
+  const [email, setEmail] = useState('')
+  const [status, setStatus] = useState('idle')
+  const [errorMessage, setErrorMessage] = useState('')
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+
+    const trimmedEmail = email.trim()
+
+    if (!trimmedEmail) {
+      setStatus('error')
+      setErrorMessage('Enter an email address.')
+      return
+    }
+
+    setStatus('submitting')
+    setErrorMessage('')
+
+    try {
+      await subscribeToNewsletter(trimmedEmail)
+      setStatus('success')
+      setEmail('')
+    } catch (error) {
+      setStatus('error')
+      setErrorMessage(error.message || 'The email could not be saved.')
+    }
+  }
+
   return (
-    <>
-      <section className="featured-section shop-section page-template">
+    <form className="newsletter-signup-form" onSubmit={handleSubmit}>
+      <label className="newsletter-signup-field">
+        <span className="sr-only">Email</span>
+        <input
+          type="email"
+          required
+          placeholder="you@email.com"
+          value={email}
+          onChange={(event) => {
+            setEmail(event.target.value)
+
+            if (status !== 'idle') {
+              setStatus('idle')
+              setErrorMessage('')
+            }
+          }}
+        />
+        <button className="button button-primary" type="submit" disabled={status === 'submitting'}>
+          {status === 'submitting' ? 'Submitting…' : 'Subscribe'}
+        </button>
+      </label>
+
+      {status === 'success' ? <p className="dev-form-success">You're on the list.</p> : null}
+      {status === 'error' ? <p className="dev-form-error">{errorMessage}</p> : null}
+    </form>
+  )
+}
+
+function CategoryPage({ content, onNavigate }) {
+  const isArrivingSoonCategory = ARRIVING_SOON_CATEGORY_PATHS.has(content.pathname)
+
+  return (
+    <div className="category-page-stack">
+      <section className="featured-section shop-section page-template category-page-section">
         <div className="section-heading">
-          <p className="eyebrow">{content.eyebrow}</p>
+          {content.eyebrow ? <p className="eyebrow">{content.eyebrow}</p> : null}
           <h2>{content.title}</h2>
           <p>{content.intro}</p>
+          {isArrivingSoonCategory ? (
+            <div className="category-arriving-soon">
+              <p>{arrivingSoonCopy}</p>
+              <NewsletterSignupForm />
+            </div>
+          ) : null}
         </div>
 
         <div className="page-link-row">
@@ -1275,60 +1338,77 @@ function CategoryPage({ content, onNavigate }) {
           >
             Back to map
           </a>
-          <a
-            className="button button-primary"
-            href="/contact"
-            onClick={(event) => onNavigate(event, '/contact')}
-          >
-            Contact the store
-          </a>
         </div>
 
-        <div className="product-grid">
-          {content.cards.map((product) => (
-            <ProductCard
-              key={`${content.title}-${product.slug || product.name}`}
-              product={product}
-              onNavigate={onNavigate}
-            />
+        {isArrivingSoonCategory ? null : (
+          <div className="product-grid category-page-grid">
+            {content.cards.map((product) => (
+              <ProductCard
+                key={`${content.title}-${product.slug || product.name}`}
+                product={product}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {!isArrivingSoonCategory && content.details.length ? (
+        <section className="category-rail category-page-rail">
+          {content.details.map((detail) => (
+            <article className="category-panel" key={`${content.title}-${detail.title}`}>
+              <p className="eyebrow">{detail.kicker}</p>
+              <h3>{detail.title}</h3>
+              <p>{detail.copy}</p>
+            </article>
           ))}
-        </div>
-      </section>
-
-      <section className="category-rail">
-        {content.details.map((detail) => (
-          <article className="category-panel" key={`${content.title}-${detail.title}`}>
-            <p className="eyebrow">{detail.kicker}</p>
-            <h3>{detail.title}</h3>
-            <p>{detail.copy}</p>
-          </article>
-        ))}
-      </section>
-    </>
+        </section>
+      ) : null}
+    </div>
   )
 }
 
 function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNavigate }) {
-  const [selectedColor, setSelectedColor] = useState(product.colors?.[0] || '')
+  const productImages = product.images?.length ? product.images : ['/tee-mockup.png']
+  const primaryImageIndex = findPrimaryImageIndex(productImages)
+  const initialSelectedColor = productImages[primaryImageIndex]?.color || product.colors?.[0] || ''
+  const [selectedColor, setSelectedColor] = useState(initialSelectedColor)
   const [selectedSize, setSelectedSize] = useState(product.allowedSizes?.[0] || '')
+  const [activeImageIndex, setActiveImageIndex] = useState(primaryImageIndex)
   const [quantity, setQuantity] = useState(1)
   const [message, setMessage] = useState('')
 
-  useEffect(() => {
-    setSelectedColor(product.colors?.[0] || '')
-    setSelectedSize(product.allowedSizes?.[0] || '')
-    setQuantity(1)
-    setMessage('')
-  }, [product.id])
-
-  const primaryImage = product.images?.[0] || '/tee-mockup.png'
-  const secondaryImage = product.images?.[1] || primaryImage || '/tee-mockup-hover.jpg'
+  const activeImage = imageUrlFromProductImage(productImages[activeImageIndex]) || '/tee-mockup.png'
   const availableQuantity = getAvailableQuantity(product, shirtInventory, selectedColor, selectedSize)
   const maxQuantity = availableQuantity === null ? 10 : Math.max(availableQuantity, 1)
   const isOutOfStock = availableQuantity !== null && availableQuantity <= 0
   const requiresColor = product.colors.length > 0
   const requiresSize = product.allowedSizes.length > 0
   const displayPrice = cartUnitPrice(product)
+  const showTeeSizeGuide = product.category === '/tees'
+
+  const handleColorSelect = (color) => {
+    setSelectedColor(color)
+    setActiveImageIndex(findColorImageIndex(productImages, product.colors || [], color))
+  }
+
+  const handleImageSelect = (imageIndex) => {
+    setActiveImageIndex(imageIndex)
+
+    const imageColor = productImages[imageIndex]?.color || product.colors?.[imageIndex]
+
+    if (imageColor) {
+      setSelectedColor(imageColor)
+    }
+  }
+
+  const handlePreviousImage = () => {
+    handleImageSelect((activeImageIndex - 1 + productImages.length) % productImages.length)
+  }
+
+  const handleNextImage = () => {
+    handleImageSelect((activeImageIndex + 1) % productImages.length)
+  }
 
   const handleAddToCart = (event) => {
     event.preventDefault()
@@ -1365,11 +1445,52 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
       <div className="product-page-grid">
         <div className="product-gallery-card">
           <div className="product-page-image product-page-image-primary">
-            <img src={primaryImage} alt={product.name} />
+            {productImages.length > 1 ? (
+              <button
+                type="button"
+                className="product-gallery-nav product-gallery-nav-prev"
+                onClick={handlePreviousImage}
+                aria-label="Previous product image"
+              >
+                &lt;
+              </button>
+            ) : null}
+            <img src={activeImage} alt={`${product.name}${selectedColor ? ` in ${selectedColor.replace('-', ' ')}` : ''}`} />
+            {productImages.length > 1 ? (
+              <button
+                type="button"
+                className="product-gallery-nav product-gallery-nav-next"
+                onClick={handleNextImage}
+                aria-label="Next product image"
+              >
+                &gt;
+              </button>
+            ) : null}
           </div>
-          <div className="product-page-image product-page-image-secondary">
-            <img src={secondaryImage} alt="" aria-hidden="true" />
-          </div>
+          {productImages.length > 1 ? (
+            <div className="product-gallery-thumbs" aria-label="Product images">
+              {productImages.map((image, imageIndex) => {
+                const imageUrl = imageUrlFromProductImage(image)
+                const colorLabel =
+                  image?.color?.replace('-', ' ') ||
+                  product.colors?.[imageIndex]?.replace('-', ' ') ||
+                  `image ${imageIndex + 1}`
+
+                return (
+                  <button
+                    key={`${imageUrl}-${imageIndex}`}
+                    type="button"
+                    className={`product-gallery-thumb ${activeImageIndex === imageIndex ? 'is-active' : ''}`}
+                    onClick={() => handleImageSelect(imageIndex)}
+                    aria-label={`Show ${colorLabel}`}
+                  >
+                    <img src={imageUrl} alt="" aria-hidden="true" />
+                    <span>{colorLabel}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
         </div>
 
         <div className="product-page-copy">
@@ -1398,7 +1519,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                       key={color}
                       type="button"
                       className={`product-chip ${selectedColor === color ? 'is-active' : ''}`}
-                      onClick={() => setSelectedColor(color)}
+                      onClick={() => handleColorSelect(color)}
                     >
                       {color.replace('-', ' ')}
                     </button>
@@ -1441,7 +1562,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                 ? product.inventoryScope === 'shared-shirt'
                   ? 'Shared shirt stock will be confirmed once color and size are selected.'
                   : 'Inventory for this item is not tracked yet.'
-                : `${availableQuantity} available in the shared shirt stock pool.`}
+                : `${availableQuantity} available.`}
             </p>
 
             {message ? <p className="dev-form-success">{message}</p> : null}
@@ -1466,8 +1587,41 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
               </a>
             </div>
           </form>
+
         </div>
       </div>
+
+      {showTeeSizeGuide ? (
+        <section className="product-size-guide" aria-labelledby="product-size-guide-heading">
+          <div className="product-size-guide-copy">
+            <p className="eyebrow">size guide</p>
+            <h3 id="product-size-guide-heading">tee measurements</h3>
+          </div>
+
+          <div className="product-size-guide-table-wrap">
+            <table className="product-size-guide-table">
+              <thead>
+                <tr>
+                  <th>(in inches)</th>
+                  {teeSizeGuideColumns.map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {teeSizeGuideRows.map((row) => (
+                  <tr key={row.label}>
+                    <th>{row.label}</th>
+                    {row.values.map((value, index) => (
+                      <td key={`${row.label}-${teeSizeGuideColumns[index]}`}>{value}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
     </section>
   )
 }
@@ -1524,7 +1678,9 @@ function CartPage({ cart, shirtInventory, onNavigate, onRemoveFromCart, onUpdate
                     {[item.color?.replace('-', ' '), item.size].filter(Boolean).join(' • ')}
                   </p>
                   {availableQuantity !== null ? (
-                    <p className="cart-item-stock">{availableQuantity} currently available in shared stock.</p>
+                    <p className="cart-item-stock">
+                      {availableQuantity} currently available.
+                    </p>
                   ) : (
                     <p className="cart-item-stock">Inventory is not tracked yet for this item.</p>
                   )}
@@ -1635,92 +1791,58 @@ function ProductMissingPage({ onNavigate }) {
 
 function AboutPage({ onNavigate }) {
   return (
-    <>
-      <section className="story-section route-section">
-        <div className="story-card">
-          <p className="eyebrow">about</p>
-          <h2>{aboutContent.title}</h2>
-          <p>{aboutContent.intro}</p>
+    <section className="about-section route-section">
+      <div className="about-card">
+        <p className="eyebrow">about</p>
+        <h2>matsumoto*</h2>
+        <p>
+          matsumoto* is a clothing brand based and ran out of west jordan, UT created by
+          ethan jinks. matsumoto* specializes in band tees and one-of-one cyanotype pieces.
+        </p>
+
+        <h3>why matsumoto*?</h3>
+        <p>
+          the name's origin comes from my culture. i am 1/4th japanese, and participate
+          in an obon dancing festival every year in salt lake city, utah. i have been
+          dancing since i was really little, maybe only 2 or 3 years old. i have always
+          loved dancing to a song they play every year, with the name{' '}
           <a
-            className="button button-secondary story-button"
-            href="/"
-            onClick={(event) => onNavigate(event, '/')}
+            href="https://www.youtube.com/watch?v=nZjNaJevxX4&list=RDnZjNaJevxX4&start_radio=1"
+            target="_blank"
+            rel="noreferrer"
           >
-            Back to map
+            matsumoto bon bon
           </a>
-        </div>
+          .
+        </p>
+        <p>
+          matsumoto also looks like a wonderful city, and i've had a dream to travel there.
+        </p>
 
-        <div className="story-list">
-          {aboutContent.points.map((point) => (
-            <article key={point.title}>
-              <span>{point.kicker}</span>
-              <h3>{point.title}</h3>
-              <p>{point.copy}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="notes-section route-section">
-        <div className="notes-copy">
-          <p className="eyebrow">brand notes</p>
-          <h2>what belongs here later.</h2>
-          <ul className="notes-list">
-            {aboutContent.notes.map((note) => (
-              <li key={note}>{note}</li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="newsletter-card">
-          <p className="panel-label">next step</p>
-          <h3>Translate the real story into this structure.</h3>
-          <p>
-            Once the brand language is settled, this page can become more
-            specific without changing the overall system of the site.
-          </p>
-        </div>
-      </section>
-    </>
+        <a
+          className="button button-secondary story-button"
+          href="/"
+          onClick={(event) => onNavigate(event, '/')}
+        >
+          Back to map
+        </a>
+      </div>
+    </section>
   )
 }
 
-function ContactPage({ onNavigate }) {
+function ContactPage() {
   return (
-    <>
-      <section className="notes-section route-section">
-        <div className="notes-copy">
-          <p className="eyebrow">contact</p>
-          <h2>{contactContent.title}</h2>
-          <p>{contactContent.intro}</p>
-          <a
-            className="button button-secondary notes-button"
-            href="/"
-            onClick={(event) => onNavigate(event, '/')}
-          >
-            Back to map
-          </a>
-        </div>
-
-        <div className="newsletter-card">
-          <p className="panel-label">email</p>
-          <h3>jinks@matsumotoshop.com</h3>
-          <a className="button button-primary" href="mailto:jinks@matsumotoshop.com">
-            Email the store
-          </a>
-        </div>
-      </section>
-
-      <section className="category-rail">
-        {contactContent.panels.map((panel) => (
-          <article className="category-panel" key={panel.title}>
-            <p className="eyebrow">{panel.kicker}</p>
-            <h3>{panel.title}</h3>
-            <p>{panel.copy}</p>
-          </article>
-        ))}
-      </section>
-    </>
+    <section className="about-section route-section">
+      <div className="about-card contact-card-simple">
+        <p className="eyebrow">contact</p>
+        <h2>jinks@matsumotoshop.com</h2>
+        <p>please email here with any inquiries, and we will get right back to you. thank you!</p>
+        <a className="button button-primary" href="mailto:jinks@matsumotoshop.com">
+          email the store
+        </a>
+      </div>
+    </section>
   )
 }
 
@@ -2158,6 +2280,7 @@ function renderPage(
 
     return (
       <ProductPage
+        key={matchedProduct.id}
         product={matchedProduct}
         shirtInventory={shirtInventory}
         cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)}
@@ -2172,6 +2295,7 @@ function renderPage(
       <CategoryPage
         content={{
           ...merchPageContent[pathname],
+          pathname,
           cards: categoryCards(pathname, customProducts),
         }}
         onNavigate={onNavigate}
@@ -2211,7 +2335,13 @@ function renderPage(
     return <PolicyPage content={policyPages[pathname]} onNavigate={onNavigate} />
   }
 
-  if (pathname === '/dev' || pathname === '/dev/orders' || pathname === '/dev/customers' || pathname === '/dev/backups') {
+  if (
+    pathname === '/dev' ||
+    pathname === '/dev/orders' ||
+    pathname === '/dev/customers' ||
+    pathname === '/dev/backups' ||
+    pathname === '/dev/shipping'
+  ) {
     return (
       <DevPage
         categories={merchCategoryLinks}
@@ -2270,6 +2400,10 @@ function pageTitle(pathname, productCatalog) {
 
   if (pathname === '/dev/backups') {
     return 'Dev Store Backups | matsumoto*'
+  }
+
+  if (pathname === '/dev/shipping') {
+    return 'Dev Shipping Spreadsheets | matsumoto*'
   }
 
   if (pathname === '/cart') {
@@ -2362,12 +2496,12 @@ function App() {
     }
   }, [])
 
-  const productCatalog = buildStoreCatalog(customProducts)
+  const productCatalog = useMemo(() => buildStoreCatalog(customProducts), [customProducts])
 
   useEffect(() => {
     document.title = pageTitle(pathname, productCatalog)
     window.scrollTo(0, 0)
-  }, [pathname, customProducts])
+  }, [pathname, productCatalog])
 
   useEffect(() => {
     window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart))
@@ -2443,10 +2577,11 @@ function App() {
           slug: product.slug,
           category: product.category,
           name: product.name,
-          image: product.images?.[0] || '/tee-mockup.png',
+          image: imageUrlFromProductImage(primaryProductImage(product)) || '/tee-mockup.png',
           price: product.price,
           hasDeal: product.hasDeal,
           salePrice: product.salePrice,
+          filmInventory: product.filmInventory,
           color,
           size,
           quantity: Math.max(1, cappedQuantity),

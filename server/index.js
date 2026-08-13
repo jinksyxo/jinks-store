@@ -15,6 +15,7 @@ const distDir = path.join(rootDir, 'dist')
 const dataDir = path.join(rootDir, 'server', 'data')
 const uploadsDir = path.join(dataDir, 'uploads')
 const backupsDir = path.join(dataDir, 'backups')
+const shippingSpreadsheetsDir = path.join(dataDir, 'shipping-spreadsheets')
 const productsFilePath = path.join(dataDir, 'products.json')
 const shirtInventoryFilePath = path.join(dataDir, 'shirt-inventory.json')
 const stripeOrdersFilePath = path.join(dataDir, 'stripe-orders.json')
@@ -60,6 +61,11 @@ loadEnvFile(path.join(rootDir, '.env.local'))
 const PORT = Number(process.env.PORT || 3001)
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'matsumoto-dev'
 const SESSION_SECRET = process.env.SESSION_SECRET || 'replace-this-session-secret'
+// Optional. When unset, admin login stays password-only (unchanged behavior).
+// Generate one with `npm run setup-2fa`.
+const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || ''
+const TWO_FACTOR_CHALLENGE_TTL_MS = 5 * 60 * 1000
+const TWO_FACTOR_MAX_ATTEMPTS = 5
 const APP_URL = process.env.APP_URL || 'http://localhost:5173'
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || ''
 const STRIPE_PUBLISHABLE_KEY = process.env.VITE_STRIPE_PUBLISHABLE_KEY || ''
@@ -77,14 +83,16 @@ const STRIPE_STANDARD_SHIPPING_AMOUNT = Math.max(
   0,
   Number(process.env.STRIPE_STANDARD_SHIPPING_AMOUNT || 800),
 )
-const STRIPE_EXPRESS_SHIPPING_AMOUNT = Math.max(
-  0,
-  Number(process.env.STRIPE_EXPRESS_SHIPPING_AMOUNT || 1500),
-)
 const STRIPE_FREE_SHIPPING_THRESHOLD = Math.max(
   0,
-  Number(process.env.STRIPE_FREE_SHIPPING_THRESHOLD || 10000),
+  Number(process.env.STRIPE_FREE_SHIPPING_THRESHOLD || 6500),
 )
+const STRIPE_TAX_BEHAVIOR = ['exclusive', 'inclusive', 'unspecified'].includes(
+  String(process.env.STRIPE_TAX_BEHAVIOR || 'exclusive').trim(),
+)
+  ? String(process.env.STRIPE_TAX_BEHAVIOR || 'exclusive').trim()
+  : 'exclusive'
+const STRIPE_DEFAULT_TAX_CODE = String(process.env.STRIPE_DEFAULT_TAX_CODE || '').trim()
 const COOKIE_NAME = 'matsumoto_admin'
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const MAX_IMAGE_COUNT = 6
@@ -110,6 +118,30 @@ const ORDER_REFUND_STATUS_OPTIONS = [
   'refunded',
 ]
 const MAX_CHECKOUT_ITEMS = 25
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const NEWSLETTER_TAG = 'newsletter'
+const RESEND_API_KEY = process.env.RESEND_API_KEY || ''
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev'
+const SHIPPING_SPREADSHEET_ALERT_EMAIL =
+  process.env.SHIPPING_SPREADSHEET_ALERT_EMAIL || 'jinks@matsumotoshop.com'
+// Utah store hours. Override with SHIPPING_SPREADSHEET_TIMEZONE if that ever changes.
+const SHIPPING_SPREADSHEET_TIMEZONE =
+  process.env.SHIPPING_SPREADSHEET_TIMEZONE || 'America/Denver'
+const SHIPPING_SPREADSHEET_HOUR = Math.min(
+  23,
+  Math.max(0, Number(process.env.SHIPPING_SPREADSHEET_HOUR ?? 7)),
+)
+// Monday, Wednesday, Friday (JS getDay: Sun=0 ... Sat=6).
+const SHIPPING_SPREADSHEET_WEEKDAYS = new Set([1, 3, 5])
+const SHIPPING_SPREADSHEET_SCHEDULE_CHECK_MS = 5 * 60 * 1000
+const SHIPPING_FROM_NAME = process.env.SHIPPING_FROM_NAME || 'Ethan Jinks'
+const SHIPPING_FROM_ADDRESS =
+  process.env.SHIPPING_FROM_ADDRESS || '1233 W Trimble Ln, West Jordan Utah, 84088-9082'
+// Flat per-unit weight assumption for standard tees. Other categories (1-of-1 dress
+// shirts, bottoms, other merchandise) don't have a reliable per-unit weight yet, so
+// their orders are left blank on purpose for manual entry rather than guessed at.
+const TEE_WEIGHT_OZ_PER_UNIT = 5.3
+const TEE_CATEGORY_PATH = '/tees'
 const USE_HOSTED_DATABASE = Boolean(TURSO_DATABASE_URL)
 const stripeClient = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, {
@@ -169,6 +201,24 @@ function normalizeColorSelection(colors) {
   return COLOR_OPTIONS.filter((color) => Array.isArray(colors) && colors.includes(color))
 }
 
+function normalizePrimaryImages(images) {
+  const primaryIndex = images.findIndex((image) => image.primary === true || image.isPrimary === true)
+  const resolvedPrimaryIndex = primaryIndex >= 0 ? primaryIndex : 0
+  const secondaryIndex = images.findIndex(
+    (image, index) =>
+      index !== resolvedPrimaryIndex && (image.secondary === true || image.isSecondary === true),
+  )
+  const fallbackSecondaryIndex = images.findIndex((_, index) => index !== resolvedPrimaryIndex)
+  const resolvedSecondaryIndex =
+    secondaryIndex >= 0 ? secondaryIndex : fallbackSecondaryIndex >= 0 ? fallbackSecondaryIndex : -1
+
+  return images.map((image, index) => ({
+    ...image,
+    primary: images.length > 0 && index === resolvedPrimaryIndex,
+    secondary: resolvedSecondaryIndex >= 0 && index === resolvedSecondaryIndex,
+  }))
+}
+
 function normalizeProductRecord(product, index) {
   const category = CATEGORY_OPTIONS.includes(product.category) ? product.category : '/tees'
   const productType = PRODUCT_TYPE_OPTIONS.includes(product.productType)
@@ -185,16 +235,22 @@ function normalizeProductRecord(product, index) {
   const name = String(product.name || product.title || '').trim()
   const description = String(product.description || '').trim()
   const slug = slugify(product.slug || name || `${productType}-${index + 1}`)
-  const images = Array.isArray(product.images)
-    ? product.images
-        .filter((image) => image && typeof image.url === 'string')
-        .map((image) => ({
-          name: image.name || path.basename(image.url),
-          type: image.type || 'image/jpeg',
-          url: image.url,
-          fileName: image.fileName || path.basename(image.url),
-        }))
-    : []
+  const images = normalizePrimaryImages(
+    Array.isArray(product.images)
+      ? product.images
+          .filter((image) => image && typeof image.url === 'string')
+          .map((image) => ({
+            name: image.name || path.basename(image.url),
+            type: image.type || 'image/jpeg',
+            url: image.url,
+            fileName: image.fileName || path.basename(image.url),
+            color: COLOR_OPTIONS.includes(image.color) ? image.color : '',
+            primary: Boolean(image.primary ?? image.isPrimary),
+            secondary: Boolean(image.secondary ?? image.isSecondary),
+          }))
+      : [],
+  )
+  const filmInventory = Number(product.filmInventory ?? product.designInventory ?? 0)
 
   return {
     id: product.id,
@@ -215,6 +271,10 @@ function normalizeProductRecord(product, index) {
     ),
     addToUtahCollection: Boolean(product.addToUtahCollection),
     salePrice: product.hasDeal ? Number(product.salePrice) || null : null,
+    filmInventory:
+      productType === 'shirt' && Number.isFinite(filmInventory) && filmInventory >= 0
+        ? Math.floor(filmInventory)
+        : 0,
     tag: product.hasDeal ? 'Active Deal' : 'New Upload',
     tint: product.tint || '#f4f4f4',
     images,
@@ -256,6 +316,20 @@ function absoluteAssetUrl(urlPath) {
   }
 }
 
+function normalizeStoredImageUrl(value) {
+  const rawValue = String(value || '').trim()
+
+  if (!rawValue) {
+    return ''
+  }
+
+  try {
+    return new URL(rawValue, APP_URL).pathname
+  } catch {
+    return rawValue
+  }
+}
+
 function createDefaultShirtInventory() {
   return COLOR_OPTIONS.reduce((inventory, color) => {
     inventory[color] = SIZE_OPTIONS.reduce((sizes, size) => {
@@ -269,6 +343,7 @@ function createDefaultShirtInventory() {
 mkdirSync(dataDir, { recursive: true })
 mkdirSync(uploadsDir, { recursive: true })
 mkdirSync(backupsDir, { recursive: true })
+mkdirSync(shippingSpreadsheetsDir, { recursive: true })
 
 if (!existsSync(productsFilePath)) {
   writeFileSync(productsFilePath, '[]\n')
@@ -406,15 +481,143 @@ function validateSessionCookie(cookieValue) {
   }
 }
 
+// Secure is derived from APP_URL rather than hardcoded so local http:// dev
+// (including LAN testing on a phone) still works, while a live https:// deploy
+// gets the cookie locked to secure transport automatically.
+const SESSION_COOKIE_SECURE_ATTR = APP_URL.startsWith('https://') ? '; Secure' : ''
+
 function sessionCookieHeader(cookieValue, expiresAt) {
-  return `${COOKIE_NAME}=${cookieValue}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(
+  return `${COOKIE_NAME}=${cookieValue}; Path=/; HttpOnly; SameSite=Strict${SESSION_COOKIE_SECURE_ATTR}; Max-Age=${Math.max(
     0,
     Math.floor((expiresAt - Date.now()) / 1000),
   )}`
 }
 
 function clearSessionCookieHeader() {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`
+  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict${SESSION_COOKIE_SECURE_ATTR}; Max-Age=0`
+}
+
+// RFC 4648 base32, used by every authenticator app for TOTP secrets/keys.
+// (Only decode is needed server-side — encoding a fresh secret happens once,
+// in scripts/setup-2fa.js, which keeps its own copy of this.)
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function base32Decode(base32String) {
+  const cleaned = String(base32String || '')
+    .toUpperCase()
+    .replace(/[^A-Z2-7]/g, '')
+  let bits = ''
+
+  for (const char of cleaned) {
+    const value = BASE32_ALPHABET.indexOf(char)
+
+    if (value === -1) {
+      continue
+    }
+
+    bits += value.toString(2).padStart(5, '0')
+  }
+
+  const bytes = []
+
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2))
+  }
+
+  return Buffer.from(bytes)
+}
+
+// RFC 6238 TOTP: HMAC-SHA1 over a 30-second time counter, truncated to a
+// 6-digit code. Same algorithm every authenticator app already implements.
+function generateTotpCode(secretBase32, timestampMs = Date.now(), timeStepSeconds = 30) {
+  const key = base32Decode(secretBase32)
+  const counter = Math.floor(timestampMs / 1000 / timeStepSeconds)
+  const counterBuffer = Buffer.alloc(8)
+  counterBuffer.writeBigUInt64BE(BigInt(counter))
+
+  const hmac = createHmac('sha1', key).update(counterBuffer).digest()
+  const offset = hmac[hmac.length - 1] & 0x0f
+  const binaryCode =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff)
+
+  return String(binaryCode % 1000000).padStart(6, '0')
+}
+
+// Accepts the current 30s step plus one step on either side, so a code
+// entered right at a rollover boundary (or a slightly-off device clock)
+// still works.
+function verifyTotpCode(secretBase32, submittedCode) {
+  const normalizedCode = String(submittedCode || '').trim()
+
+  if (!/^\d{6}$/.test(normalizedCode)) {
+    return false
+  }
+
+  const now = Date.now()
+  const submittedBuffer = Buffer.from(normalizedCode)
+
+  for (let stepOffset = -1; stepOffset <= 1; stepOffset += 1) {
+    const expectedCode = generateTotpCode(secretBase32, now + stepOffset * 30 * 1000)
+    const expectedBuffer = Buffer.from(expectedCode)
+
+    if (
+      expectedBuffer.length === submittedBuffer.length &&
+      timingSafeEqual(expectedBuffer, submittedBuffer)
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
+// A signed, stateless "waiting for a 2FA code" token — same sign/verify
+// pattern as the session cookie, just scoped with a distinct prefix so a
+// session cookie's signature can never double as a valid challenge token.
+function buildTwoFactorChallengeToken({ expiresAt, attempts }) {
+  const payload = JSON.stringify({
+    expiresAt,
+    attempts,
+    nonce: randomBytes(12).toString('hex'),
+  })
+  const encodedPayload = Buffer.from(payload, 'utf8').toString('base64url')
+  const signature = createSignature(`2fa:${encodedPayload}`)
+
+  return `${encodedPayload}.${signature}`
+}
+
+function readTwoFactorChallengeToken(token) {
+  if (!token || !token.includes('.')) {
+    return null
+  }
+
+  const [encodedPayload, signature] = token.split('.')
+  const expectedSignature = createSignature(`2fa:${encodedPayload}`)
+
+  try {
+    const actualBuffer = Buffer.from(signature, 'hex')
+    const expectedBuffer = Buffer.from(expectedSignature, 'hex')
+
+    if (
+      actualBuffer.length !== expectedBuffer.length ||
+      !timingSafeEqual(actualBuffer, expectedBuffer)
+    ) {
+      return null
+    }
+
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'))
+
+    if (!(Number(payload.expiresAt) > Date.now())) {
+      return null
+    }
+
+    return payload
+  } catch {
+    return null
+  }
 }
 
 function formatBackupTimestamp(value = new Date()) {
@@ -719,6 +922,9 @@ function normalizeStripeOrderRecord(order) {
       : [],
     stockAdjustments: Array.isArray(order?.stockAdjustments)
       ? order.stockAdjustments.map((adjustment) => ({
+          type: adjustment?.type ? String(adjustment.type).trim() : 'blank-shirt',
+          productId: adjustment?.productId ? String(adjustment.productId).trim() : '',
+          productName: adjustment?.productName ? String(adjustment.productName).trim() : '',
           color: adjustment?.color ? String(adjustment.color).trim() : '',
           size: adjustment?.size ? String(adjustment.size).trim() : '',
           quantity: Number(adjustment?.quantity || 0),
@@ -726,7 +932,21 @@ function normalizeStripeOrderRecord(order) {
       : [],
     createdAt: order?.createdAt ? String(order.createdAt).trim() : new Date(0).toISOString(),
     updatedAt: order?.updatedAt ? String(order.updatedAt).trim() : new Date(0).toISOString(),
+    shippingSpreadsheetFileName: order?.shippingSpreadsheetFileName
+      ? String(order.shippingSpreadsheetFileName).trim()
+      : null,
+    shippingSpreadsheetGeneratedAt: order?.shippingSpreadsheetGeneratedAt
+      ? String(order.shippingSpreadsheetGeneratedAt).trim()
+      : null,
   }
+}
+
+// Custom Checkout (ui_mode: 'custom', built with ShippingAddressElement) stores the
+// address a customer entered under collected_information.shipping_details — the legacy
+// top-level shipping_details field used by hosted Checkout is not populated for it. Read
+// both so this keeps working if a session was ever created a different way.
+function getCollectedShippingDetails(checkoutSession) {
+  return checkoutSession?.collected_information?.shipping_details || checkoutSession?.shipping_details || null
 }
 
 function serializeShippingDetails(shippingDetails) {
@@ -781,31 +1001,12 @@ function shippingOptionsForSubtotal(amountSubtotal) {
     },
   }
 
-  const expressOption = {
-    shipping_rate_data: {
-      display_name: 'Express shipping',
-      type: 'fixed_amount',
-      fixed_amount: {
-        amount: STRIPE_EXPRESS_SHIPPING_AMOUNT,
-        currency: 'usd',
-      },
-      delivery_estimate: {
-        minimum: {
-          unit: 'business_day',
-          value: 1,
-        },
-        maximum: {
-          unit: 'business_day',
-          value: 2,
-        },
-      },
-    },
-  }
-
-  return [standardOption, expressOption]
+  return [standardOption]
 }
 
 function buildCheckoutSessionOrderFields(checkoutSession) {
+  const shippingDetails = getCollectedShippingDetails(checkoutSession)
+
   return {
     checkoutReference: checkoutSession.metadata?.checkout_reference || null,
     paymentIntentId:
@@ -814,9 +1015,8 @@ function buildCheckoutSessionOrderFields(checkoutSession) {
         : checkoutSession.payment_intent?.id || null,
     customerEmail:
       checkoutSession.customer_details?.email || checkoutSession.customer_email || null,
-    customerName: checkoutSession.customer_details?.name || checkoutSession.shipping_details?.name || '',
-    customerPhone:
-      checkoutSession.customer_details?.phone || checkoutSession.shipping_details?.phone || '',
+    customerName: checkoutSession.customer_details?.name || shippingDetails?.name || '',
+    customerPhone: checkoutSession.customer_details?.phone || shippingDetails?.phone || '',
     currency: checkoutSession.currency || 'usd',
     amountTotal: Number(checkoutSession.amount_total || 0),
     amountSubtotal: Number(checkoutSession.amount_subtotal || 0),
@@ -829,7 +1029,7 @@ function buildCheckoutSessionOrderFields(checkoutSession) {
       typeof checkoutSession.invoice === 'string'
         ? checkoutSession.invoice
         : checkoutSession.invoice?.id || null,
-    shippingDetails: serializeShippingDetails(checkoutSession.shipping_details),
+    shippingDetails: serializeShippingDetails(shippingDetails),
   }
 }
 
@@ -1398,6 +1598,292 @@ async function createStoreBackup() {
   }
 }
 
+const SHIPPING_SPREADSHEET_WEEKDAY_NUMBERS = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+
+function formatDateOnly(date, timeZone = SHIPPING_SPREADSHEET_TIMEZONE) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone }).format(date)
+}
+
+function getZonedDateParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    hour: 'numeric',
+    hour12: false,
+  })
+    .formatToParts(date)
+    .reduce((accumulator, part) => {
+      accumulator[part.type] = part.value
+      return accumulator
+    }, {})
+
+  return {
+    weekday: SHIPPING_SPREADSHEET_WEEKDAY_NUMBERS[parts.weekday] ?? null,
+    // Some locales render midnight as "24" instead of "0".
+    hour: parts.hour === '24' ? 0 : Number(parts.hour),
+    dateKey: formatDateOnly(date, timeZone),
+  }
+}
+
+function isShippableOrder(order) {
+  return (
+    order.paymentStatus === 'paid' &&
+    order.refundStatus !== 'refunded' &&
+    Boolean(order.shippingDetails?.address?.line1) &&
+    !order.shippingSpreadsheetFileName
+  )
+}
+
+function getUnclaimedShippableOrders(orders) {
+  return orders
+    .filter(isShippableOrder)
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+}
+
+function summarizeOrderLineItems(order) {
+  return order.lineItems
+    .map((item) => {
+      const variant = [item.color, item.size].filter(Boolean).join(' / ')
+      return `${item.productName || 'item'}${variant ? ` (${variant})` : ''} x${item.quantity}`
+    })
+    .join('; ')
+}
+
+// Returns the total package weight in ounces for orders made up entirely of standard
+// tees (5.3oz each). Returns null — left blank in the spreadsheet for manual entry —
+// the moment any line item isn't a recognized tee, rather than report a partial weight.
+function calculateOrderWeightOz(order, productsById) {
+  if (!order.lineItems.length) {
+    return null
+  }
+
+  let totalOz = 0
+
+  for (const item of order.lineItems) {
+    const product = productsById.get(item.productId)
+
+    if (!product || product.category !== TEE_CATEGORY_PATH) {
+      return null
+    }
+
+    totalOz += TEE_WEIGHT_OZ_PER_UNIT * Number(item.quantity || 0)
+  }
+
+  return totalOz
+}
+
+function buildShippingSpreadsheetCsv(orders, generatedAt, productsById) {
+  const spreadsheetDate = formatDateOnly(generatedAt)
+  const rows = [
+    [
+      'order_date',
+      'spreadsheet_date',
+      'shipper_name',
+      'shipping_from',
+      'customer_name',
+      'address_line1',
+      'address_line2',
+      'city',
+      'state',
+      'zip',
+      'country',
+      'phone',
+      'email',
+      'order_id',
+      'items',
+      'weight_oz',
+    ],
+    ...orders.map((order) => {
+      const address = order.shippingDetails?.address
+      const weightOz = calculateOrderWeightOz(order, productsById)
+
+      return [
+        formatDateOnly(new Date(order.createdAt)),
+        spreadsheetDate,
+        SHIPPING_FROM_NAME,
+        SHIPPING_FROM_ADDRESS,
+        order.shippingDetails?.name || order.customerName || '',
+        address?.line1 || '',
+        address?.line2 || '',
+        address?.city || '',
+        address?.state || '',
+        address?.postalCode || '',
+        address?.country || '',
+        order.shippingDetails?.phone || order.customerPhone || '',
+        order.customerEmail || '',
+        order.sessionId,
+        summarizeOrderLineItems(order),
+        weightOz === null ? '' : Math.round(weightOz * 10) / 10,
+      ]
+    }),
+  ]
+
+  return `${rows.map((row) => row.map(escapeCsvField).join(',')).join('\n')}\n`
+}
+
+async function listShippingSpreadsheets() {
+  const fileNames = await fsPromises.readdir(shippingSpreadsheetsDir)
+  const entries = await Promise.all(
+    fileNames
+      .filter((fileName) => fileName.endsWith('.csv'))
+      .map(async (fileName) => {
+        const filePath = path.join(shippingSpreadsheetsDir, fileName)
+        const [stats, contents] = await Promise.all([
+          fsPromises.stat(filePath),
+          fsPromises.readFile(filePath, 'utf8'),
+        ])
+        const orderCount = Math.max(0, contents.trim().split('\n').length - 1)
+
+        return {
+          fileName,
+          size: stats.size,
+          orderCount,
+          createdAt: stats.birthtime.toISOString(),
+          updatedAt: stats.mtime.toISOString(),
+          downloadUrl: `/api/admin/shipping-spreadsheets/${encodeURIComponent(fileName)}`,
+        }
+      }),
+  )
+
+  return entries.sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  )
+}
+
+async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt }) {
+  if (!RESEND_API_KEY) {
+    return { sent: false, error: 'RESEND_API_KEY is not configured.' }
+  }
+
+  const dashboardUrl = `${APP_URL.replace(/\/$/, '')}/dev/shipping`
+  const orderNoun = orderCount === 1 ? 'order' : 'orders'
+  const generatedAtLabel = new Date(generatedAt).toLocaleString('en-US', {
+    timeZone: SHIPPING_SPREADSHEET_TIMEZONE,
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+  const subject = fileName
+    ? `New shipping spreadsheet ready — ${orderCount} ${orderNoun}`
+    : 'Shipping spreadsheet check — no new orders'
+  const text = fileName
+    ? `A new shipping spreadsheet (${fileName}) with ${orderCount} ${orderNoun} was generated at ${generatedAtLabel}.\n\nDownload it from the dev site: ${dashboardUrl}`
+    : `Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.\n\nDev site: ${dashboardUrl}`
+  const html = fileName
+    ? `<p>A new shipping spreadsheet was generated at ${generatedAtLabel}.</p><p><strong>${orderCount}</strong> ${orderNoun} — <code>${fileName}</code></p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
+    : `<p>Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.</p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: RESEND_FROM_EMAIL,
+        to: [SHIPPING_SPREADSHEET_ALERT_EMAIL],
+        subject,
+        text,
+        html,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorBody = await response.text()
+      return {
+        sent: false,
+        error: `Resend responded with ${response.status}: ${errorBody.slice(0, 300)}`,
+      }
+    }
+
+    return { sent: true, error: null }
+  } catch (error) {
+    return { sent: false, error: error.message || 'Email request failed.' }
+  }
+}
+
+async function generateShippingSpreadsheet({ trigger = 'manual' } = {}) {
+  const orders = await readStripeOrders()
+  const shippableOrders = getUnclaimedShippableOrders(orders)
+
+  if (!shippableOrders.length) {
+    const emailResult = await sendShippingSpreadsheetEmail({
+      fileName: null,
+      orderCount: 0,
+      generatedAt: new Date().toISOString(),
+    })
+
+    return { created: false, reason: 'no-new-orders', orderCount: 0, trigger, email: emailResult }
+  }
+
+  const products = await readProducts()
+  const productsById = new Map(products.map((product) => [product.id, product]))
+
+  const generatedAt = new Date()
+  const fileName = `matsumoto-shipping-${formatBackupTimestamp(generatedAt)}-${randomBytes(3).toString('hex')}.csv`
+  const filePath = path.join(shippingSpreadsheetsDir, fileName)
+  const csvContent = buildShippingSpreadsheetCsv(shippableOrders, generatedAt, productsById)
+
+  await fsPromises.writeFile(filePath, csvContent, 'utf8')
+
+  const claimedSessionIds = new Set(shippableOrders.map((order) => order.sessionId))
+  const updatedOrders = orders.map((order) =>
+    claimedSessionIds.has(order.sessionId)
+      ? normalizeStripeOrderRecord({
+          ...order,
+          shippingSpreadsheetFileName: fileName,
+          shippingSpreadsheetGeneratedAt: generatedAt.toISOString(),
+          updatedAt: generatedAt.toISOString(),
+        })
+      : order,
+  )
+
+  await writeStripeOrders(updatedOrders)
+
+  const emailResult = await sendShippingSpreadsheetEmail({
+    fileName,
+    orderCount: shippableOrders.length,
+    generatedAt: generatedAt.toISOString(),
+  })
+
+  return {
+    created: true,
+    fileName,
+    orderCount: shippableOrders.length,
+    trigger,
+    generatedAt: generatedAt.toISOString(),
+    email: emailResult,
+  }
+}
+
+let lastShippingSpreadsheetScheduleCheckKey = null
+
+async function maybeRunScheduledShippingSpreadsheet() {
+  const { weekday, hour, dateKey } = getZonedDateParts(new Date(), SHIPPING_SPREADSHEET_TIMEZONE)
+
+  if (!SHIPPING_SPREADSHEET_WEEKDAYS.has(weekday) || hour < SHIPPING_SPREADSHEET_HOUR) {
+    return
+  }
+
+  if (lastShippingSpreadsheetScheduleCheckKey === dateKey) {
+    return
+  }
+
+  lastShippingSpreadsheetScheduleCheckKey = dateKey
+
+  try {
+    const result = await generateShippingSpreadsheet({ trigger: 'scheduled' })
+
+    if (result.created) {
+      console.log(
+        `[shipping-spreadsheet] generated ${result.fileName} with ${result.orderCount} order(s).`,
+      )
+    }
+  } catch (error) {
+    console.error('[shipping-spreadsheet] scheduled generation failed:', error)
+  }
+}
+
 async function bootstrapLocalStoreFromLegacyJson() {
   const productCount = Number(
     localStoreDb.prepare('SELECT COUNT(*) AS count FROM products').get()?.count || 0,
@@ -1536,7 +2022,13 @@ await initializeStore()
 function publicProduct(product) {
   return {
     ...product,
-    images: product.images.map((image) => image.url),
+    images: product.images.map((image) => ({
+      name: image.name,
+      url: image.url,
+      color: image.color || '',
+      primary: Boolean(image.primary),
+      secondary: Boolean(image.secondary),
+    })),
   }
 }
 
@@ -1616,6 +2108,43 @@ function validateAdminCustomerUpdatePayload(payload) {
   }
 
   return errors
+}
+
+function validateNewsletterSubscribePayload(payload) {
+  const errors = []
+  const email = String(payload?.email || '').trim()
+
+  if (!email) {
+    errors.push('Email is required.')
+  } else if (!EMAIL_PATTERN.test(email)) {
+    errors.push('Enter a valid email address.')
+  }
+
+  return errors
+}
+
+async function subscribeCustomerToNewsletter(email) {
+  const normalizedEmail = email.trim().toLowerCase()
+  const customers = await readCustomers()
+  const existingCustomer = customers.find((customer) => customer.email === normalizedEmail)
+  const now = new Date().toISOString()
+
+  const updatedCustomer = normalizeCustomerRecord({
+    ...existingCustomer,
+    email: normalizedEmail,
+    newsletterOptIn: true,
+    tags: [...(existingCustomer?.tags || []), NEWSLETTER_TAG],
+    createdAt: existingCustomer?.createdAt || now,
+    updatedAt: now,
+  })
+
+  await writeCustomers(
+    existingCustomer
+      ? customers.map((customer) => (customer.email === normalizedEmail ? updatedCustomer : customer))
+      : [...customers, updatedCustomer],
+  )
+
+  return updatedCustomer
 }
 
 async function readJsonBody(request) {
@@ -1711,10 +2240,11 @@ function normalizePurchasedLineItems(lineItems) {
 
 function applyInventoryAdjustments(currentInventory, purchasedItems, products) {
   const nextInventory = normalizeShirtInventory(currentInventory)
+  const nextProducts = products.map((product) => ({ ...product }))
   const stockAdjustments = []
 
   purchasedItems.forEach((item) => {
-    const product = products.find((candidateProduct) => candidateProduct.id === item.productId)
+    const product = nextProducts.find((candidateProduct) => candidateProduct.id === item.productId)
 
     if (!product || product.inventoryScope !== 'shared-shirt') {
       return
@@ -1725,6 +2255,7 @@ function applyInventoryAdjustments(currentInventory, purchasedItems, products) {
     }
 
     const availableQuantity = Number(nextInventory?.[item.color]?.[item.size] ?? 0)
+    const availableFilmQuantity = Number(product.filmInventory || 0)
 
     if (availableQuantity < item.quantity) {
       throw new InventoryConflictError(
@@ -1732,16 +2263,36 @@ function applyInventoryAdjustments(currentInventory, purchasedItems, products) {
       )
     }
 
+    if (availableFilmQuantity < item.quantity) {
+      throw new InventoryConflictError(
+        `Cannot fulfill ${product.name}: only ${availableFilmQuantity} design film left.`,
+      )
+    }
+
     nextInventory[item.color][item.size] = availableQuantity - item.quantity
     stockAdjustments.push({
+      type: 'blank-shirt',
+      productId: product.id,
+      productName: product.name,
       color: item.color,
       size: item.size,
+      quantity: item.quantity,
+    })
+
+    product.filmInventory = availableFilmQuantity - item.quantity
+    stockAdjustments.push({
+      type: 'design-film',
+      productId: product.id,
+      productName: product.name,
+      color: '',
+      size: '',
       quantity: item.quantity,
     })
   })
 
   return {
     nextInventory,
+    nextProducts,
     stockAdjustments,
   }
 }
@@ -1826,6 +2377,7 @@ async function fulfillCheckoutSession(sessionId, event) {
   }
 
   await writeShirtInventory(inventoryUpdate.nextInventory)
+  await writeProducts(inventoryUpdate.nextProducts)
   await writeStripeOrders(
     updateStripeOrderRecord(existingOrders, {
       ...baseOrderFields,
@@ -1890,6 +2442,7 @@ function validateProductPayloadForMode(payload, options = {}) {
     addToFeaturedCollection,
     addToUtahCollection,
     salePrice,
+    filmInventory,
     colors,
     images,
   } = payload
@@ -1942,6 +2495,18 @@ function validateProductPayloadForMode(payload, options = {}) {
     errors.push('Utah collection flag must be true or false.')
   }
 
+  if (productType === 'shirt') {
+    const numericFilmInventory = Number(filmInventory)
+
+    if (
+      !Number.isFinite(numericFilmInventory) ||
+      numericFilmInventory < 0 ||
+      !Number.isInteger(numericFilmInventory)
+    ) {
+      errors.push('Design film inventory must be a whole number zero or greater.')
+    }
+  }
+
   if (hasDeal) {
     if (!Number.isFinite(Number(salePrice)) || Number(salePrice) <= 0) {
       errors.push('Sale price must be greater than zero.')
@@ -1988,6 +2553,10 @@ function validateProductPayloadForMode(payload, options = {}) {
     let totalBytes = 0
 
     images.forEach((image) => {
+      if (image.color && !COLOR_OPTIONS.includes(image.color)) {
+        errors.push(`${image.name} has an invalid assigned color.`)
+      }
+
       if (!ACCEPTED_IMAGE_TYPES.has(image.type)) {
         errors.push(`${image.name} is not a supported image type.`)
         return
@@ -2104,9 +2673,18 @@ function normalizeCheckoutItems(items) {
   return [...groupedItems.values()]
 }
 
+function imageForSelectedColor(product, color) {
+  return (
+    product.images.find((image) => image.color && image.color === color) ||
+    product.images[0] ||
+    null
+  )
+}
+
 function resolveCheckoutLineItems(products, shirtInventory, requestedItems) {
   const errors = []
   const lineItems = []
+  const reservedFilmByProduct = new Map()
 
   requestedItems.forEach((item) => {
     const product = products.find((candidateProduct) => candidateProduct.id === item.productId)
@@ -2138,6 +2716,9 @@ function resolveCheckoutLineItems(products, shirtInventory, requestedItems) {
 
     if (product.inventoryScope === 'shared-shirt') {
       const availableQuantity = Number(shirtInventory?.[item.color]?.[item.size] ?? 0)
+      const availableFilmQuantity = Number(product.filmInventory || 0)
+      const reservedFilmQuantity = Number(reservedFilmByProduct.get(product.id) || 0)
+      const remainingFilmQuantity = availableFilmQuantity - reservedFilmQuantity
 
       if (availableQuantity <= 0) {
         errors.push(`${product.name} is out of stock in ${item.color} ${item.size}.`)
@@ -2150,12 +2731,26 @@ function resolveCheckoutLineItems(products, shirtInventory, requestedItems) {
         )
         return
       }
+
+      if (remainingFilmQuantity <= 0) {
+        errors.push(`${product.name} is out of design film stock.`)
+        return
+      }
+
+      if (item.quantity > remainingFilmQuantity) {
+        errors.push(
+          `${product.name} only has ${remainingFilmQuantity} design film available.`,
+        )
+        return
+      }
+
+      reservedFilmByProduct.set(product.id, reservedFilmQuantity + item.quantity)
     }
 
     const unitAmount = Math.round(
       (product.hasDeal && product.salePrice ? product.salePrice : product.price) * 100,
     )
-    const imageUrl = absoluteAssetUrl(product.images?.[0]?.url)
+    const imageUrl = absoluteAssetUrl(imageForSelectedColor(product, item.color)?.url)
     const lineItem = {
       quantity: item.quantity,
       metadata: {
@@ -2167,10 +2762,12 @@ function resolveCheckoutLineItems(products, shirtInventory, requestedItems) {
       price_data: {
         currency: 'usd',
         unit_amount: unitAmount,
+        tax_behavior: STRIPE_TAX_BEHAVIOR,
         product_data: {
           name: product.name,
           description: product.description,
           ...(imageUrl ? { images: [imageUrl] } : {}),
+          ...(STRIPE_DEFAULT_TAX_CODE ? { tax_code: STRIPE_DEFAULT_TAX_CODE } : {}),
           metadata: {
             product_id: product.id,
             product_slug: product.slug,
@@ -2213,10 +2810,13 @@ async function persistImages(productId, images) {
       type: image.type,
       url: `/uploads/${safeBaseName}`,
       fileName: safeBaseName,
+      color: COLOR_OPTIONS.includes(image.color) ? image.color : '',
+      primary: Boolean(image.primary),
+      secondary: Boolean(image.secondary),
     })
   }
 
-  return savedImages
+  return normalizePrimaryImages(savedImages)
 }
 
 function buildStoredProduct(payload, savedImages) {
@@ -2235,9 +2835,11 @@ function buildStoredProduct(payload, savedImages) {
     addToFeaturedCollection: Boolean(payload.addToFeaturedCollection),
     addToUtahCollection: Boolean(payload.addToUtahCollection),
     salePrice: payload.hasDeal ? Number(payload.salePrice) : null,
+    filmInventory:
+      payload.productType === 'shirt' ? Math.max(0, Math.floor(Number(payload.filmInventory))) : 0,
     tag: payload.hasDeal ? 'Active Deal' : 'New Upload',
     tint: '#f4f4f4',
-    images: savedImages,
+    images: normalizePrimaryImages(savedImages),
     colors: payload.colors,
     createdAt: new Date().toISOString(),
     type: 'uploaded',
@@ -2245,9 +2847,35 @@ function buildStoredProduct(payload, savedImages) {
 }
 
 function mergeUpdatedProduct(existingProduct, payload, savedImages) {
-  const keptExistingImages = Array.isArray(payload.existingImages)
-    ? existingProduct.images.filter((image) => payload.existingImages.includes(image.url))
+  const existingImageRefs = Array.isArray(payload.existingImages)
+    ? payload.existingImages
+        .map((image) =>
+          typeof image === 'string' ? { url: image, color: '' } : image,
+        )
+        .map((image) => ({
+          ...image,
+          url: normalizeStoredImageUrl(image?.url),
+        }))
+        .filter((image) => image.url)
+    : null
+  const keptExistingImages = Array.isArray(existingImageRefs)
+    ? existingProduct.images
+        .filter((image) =>
+          existingImageRefs.some((imageRef) => imageRef.url === normalizeStoredImageUrl(image.url)),
+        )
+        .map((image) => {
+          const imageRef = existingImageRefs.find(
+            (candidateRef) => candidateRef.url === normalizeStoredImageUrl(image.url),
+          )
+          return {
+            ...image,
+            color: COLOR_OPTIONS.includes(imageRef?.color) ? imageRef.color : '',
+            primary: Boolean(imageRef?.primary),
+            secondary: Boolean(imageRef?.secondary),
+          }
+        })
     : existingProduct.images
+  const mergedImages = normalizePrimaryImages([...keptExistingImages, ...(savedImages ?? [])])
 
   return {
     id: existingProduct.id,
@@ -2267,8 +2895,10 @@ function mergeUpdatedProduct(existingProduct, payload, savedImages) {
     addToFeaturedCollection: Boolean(payload.addToFeaturedCollection),
     addToUtahCollection: Boolean(payload.addToUtahCollection),
     salePrice: payload.hasDeal ? Number(payload.salePrice) : null,
+    filmInventory:
+      payload.productType === 'shirt' ? Math.max(0, Math.floor(Number(payload.filmInventory))) : 0,
     tag: payload.hasDeal ? 'Active Deal' : 'New Upload',
-    images: [...keptExistingImages, ...(savedImages ?? [])],
+    images: mergedImages,
     colors: payload.colors,
   }
 }
@@ -2399,6 +3029,20 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (request.method === 'POST' && pathname === '/api/newsletter/subscribe') {
+      const body = await readJsonBody(request)
+      const validationErrors = validateNewsletterSubscribePayload(body)
+
+      if (validationErrors.length) {
+        jsonResponse(response, 400, { errors: validationErrors })
+        return
+      }
+
+      await subscribeCustomerToNewsletter(String(body.email))
+      jsonResponse(response, 200, { subscribed: true })
+      return
+    }
+
     if (request.method === 'POST' && pathname === '/api/checkout/session') {
       const body = await readJsonBody(request)
       const payloadErrors = validateCheckoutPayload(body)
@@ -2432,6 +3076,7 @@ const server = http.createServer(async (request, response) => {
         ui_mode: 'custom',
         return_url: `${APP_URL}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
         line_items: lineItems,
+        customer_creation: 'always',
         shipping_address_collection: {
           allowed_countries: STRIPE_ALLOWED_SHIPPING_COUNTRIES,
         },
@@ -2439,13 +3084,16 @@ const server = http.createServer(async (request, response) => {
         automatic_tax: {
           enabled: true,
         },
-        billing_address_collection: 'auto',
+        billing_address_collection: 'required',
         invoice_creation: {
           enabled: true,
           invoice_data: {
             description: `Matsumoto order ${checkoutReference}`,
             metadata: {
               checkout_reference: checkoutReference,
+            },
+            rendering_options: {
+              amount_tax_display: 'exclude_tax',
             },
           },
         },
@@ -2493,20 +3141,21 @@ const server = http.createServer(async (request, response) => {
       })
       const orders = await readStripeOrders()
       const matchedOrder = orders.find((order) => order.sessionId === session.id)
+      const sessionShippingDetails = getCollectedShippingDetails(session)
 
       jsonResponse(response, 200, {
         sessionId: session.id,
         status: session.status,
         paymentStatus: session.payment_status,
         customerEmail: session.customer_details?.email || session.customer_email || null,
-        customerName: session.customer_details?.name || session.shipping_details?.name || '',
-        customerPhone: session.customer_details?.phone || session.shipping_details?.phone || '',
+        customerName: session.customer_details?.name || sessionShippingDetails?.name || '',
+        customerPhone: session.customer_details?.phone || sessionShippingDetails?.phone || '',
         amountSubtotal: Number(session.amount_subtotal || 0),
         amountTotal: Number(session.amount_total || 0),
         amountShipping: Number(session.shipping_cost?.amount_total || 0),
         amountTax: Number(session.total_details?.amount_tax || 0),
         shippingMethod: session.shipping_cost?.shipping_rate?.display_name || '',
-        shippingDetails: serializeShippingDetails(session.shipping_details),
+        shippingDetails: serializeShippingDetails(sessionShippingDetails),
         expiresAt: Number(session.expires_at || 0) * 1000 || null,
         clientSecret: session.status === 'open' ? session.client_secret || null : null,
         publishableKey: session.status === 'open' ? STRIPE_PUBLISHABLE_KEY : null,
@@ -2658,6 +3307,60 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (request.method === 'GET' && pathname === '/api/admin/shipping-spreadsheets') {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const spreadsheets = await listShippingSpreadsheets()
+      const pendingOrders = getUnclaimedShippableOrders(await readStripeOrders())
+      jsonResponse(response, 200, { spreadsheets, pendingOrderCount: pendingOrders.length })
+      return
+    }
+
+    if (request.method === 'POST' && pathname === '/api/admin/shipping-spreadsheets/generate') {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const result = await generateShippingSpreadsheet({ trigger: 'manual' })
+      jsonResponse(response, 200, { result })
+      return
+    }
+
+    if (request.method === 'GET' && pathname.startsWith('/api/admin/shipping-spreadsheets/')) {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const fileName = decodeURIComponent(
+        pathname.replace('/api/admin/shipping-spreadsheets/', ''),
+      )
+
+      if (!fileName || fileName.includes('/') || fileName.includes('\\')) {
+        textResponse(response, 400, 'Invalid spreadsheet file name.')
+        return
+      }
+
+      const targetPath = path.join(shippingSpreadsheetsDir, fileName)
+      const resolvedTarget = path.resolve(targetPath)
+
+      if (
+        !resolvedTarget.startsWith(path.resolve(shippingSpreadsheetsDir)) ||
+        !existsSync(resolvedTarget)
+      ) {
+        textResponse(response, 404, 'Not found.')
+        return
+      }
+
+      response.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${fileName}"`,
+      })
+      response.end(readFileSync(resolvedTarget))
+      return
+    }
+
     if (request.method === 'PUT' && pathname.startsWith('/api/admin/orders/')) {
       if (!requireAdmin(request, response)) {
         return
@@ -2758,9 +3461,79 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/admin/login') {
       const body = await readJsonBody(request)
+      const submittedPassword = Buffer.from(String(body.password || ''))
+      const expectedPassword = Buffer.from(ADMIN_PASSWORD)
+      const passwordMatches =
+        submittedPassword.length === expectedPassword.length &&
+        timingSafeEqual(submittedPassword, expectedPassword)
 
-      if (String(body.password || '') !== ADMIN_PASSWORD) {
+      if (!passwordMatches) {
         jsonResponse(response, 401, { error: 'Password does not match.' })
+        return
+      }
+
+      if (!ADMIN_TOTP_SECRET) {
+        const expiresAt = Date.now() + SESSION_TTL_MS
+        const cookieValue = buildSessionCookie(expiresAt)
+
+        jsonResponse(
+          response,
+          200,
+          { authenticated: true },
+          { 'Set-Cookie': sessionCookieHeader(cookieValue, expiresAt) },
+        )
+        return
+      }
+
+      const challengeToken = buildTwoFactorChallengeToken({
+        expiresAt: Date.now() + TWO_FACTOR_CHALLENGE_TTL_MS,
+        attempts: 0,
+      })
+
+      jsonResponse(response, 200, {
+        authenticated: false,
+        requiresTwoFactor: true,
+        challengeToken,
+      })
+      return
+    }
+
+    if (request.method === 'POST' && pathname === '/api/admin/login/verify-2fa') {
+      if (!ADMIN_TOTP_SECRET) {
+        jsonResponse(response, 400, { error: 'Two-factor authentication is not configured.' })
+        return
+      }
+
+      const body = await readJsonBody(request)
+      const challenge = readTwoFactorChallengeToken(String(body.challengeToken || ''))
+
+      if (!challenge) {
+        jsonResponse(response, 401, {
+          error: 'That code entry expired. Enter the password again.',
+        })
+        return
+      }
+
+      if (Number(challenge.attempts) >= TWO_FACTOR_MAX_ATTEMPTS) {
+        jsonResponse(response, 401, {
+          error: 'Too many incorrect codes. Enter the password again.',
+        })
+        return
+      }
+
+      if (!verifyTotpCode(ADMIN_TOTP_SECRET, body.code)) {
+        const attempts = Number(challenge.attempts) + 1
+        const nextChallengeToken = buildTwoFactorChallengeToken({
+          expiresAt: Number(challenge.expiresAt),
+          attempts,
+        })
+
+        jsonResponse(response, 200, {
+          verified: false,
+          error: 'Incorrect code.',
+          challengeToken: nextChallengeToken,
+          attemptsRemaining: TWO_FACTOR_MAX_ATTEMPTS - attempts,
+        })
         return
       }
 
@@ -2770,7 +3543,7 @@ const server = http.createServer(async (request, response) => {
       jsonResponse(
         response,
         200,
-        { authenticated: true },
+        { verified: true, authenticated: true },
         { 'Set-Cookie': sessionCookieHeader(cookieValue, expiresAt) },
       )
       return
@@ -2857,13 +3630,34 @@ const server = http.createServer(async (request, response) => {
       }
 
       const body = await readJsonBody(request)
-      const requestedExistingImages = Array.isArray(body.existingImages) ? body.existingImages : []
+      const requestedExistingImages = Array.isArray(body.existingImages)
+        ? body.existingImages
+            .map((image) =>
+              typeof image === 'string' ? { url: image, color: '' } : image,
+            )
+            .map((image) => ({
+              ...image,
+              url: normalizeStoredImageUrl(image?.url),
+            }))
+            .filter((image) => image.url)
+        : []
       const keptExistingImages = existingProduct.images.filter((image) =>
-        requestedExistingImages.includes(image.url),
+        requestedExistingImages.some(
+          (imageRef) => imageRef.url === normalizeStoredImageUrl(image.url),
+        ),
       )
 
       if (requestedExistingImages.length !== keptExistingImages.length) {
         jsonResponse(response, 400, { errors: ['One or more existing images are invalid.'] })
+        return
+      }
+
+      const invalidExistingImageColor = requestedExistingImages.some(
+        (image) => image.color && !COLOR_OPTIONS.includes(image.color),
+      )
+
+      if (invalidExistingImageColor) {
+        jsonResponse(response, 400, { errors: ['One or more image colors are invalid.'] })
         return
       }
 
@@ -2974,6 +3768,11 @@ server.listen(PORT, () => {
       USE_HOSTED_DATABASE ? 'Turso/libSQL' : 'local SQLite'
     }\n`,
   )
+
+  // Catch up immediately in case the server started mid-window (e.g. after a
+  // restart), then keep checking on an interval for as long as it stays up.
+  maybeRunScheduledShippingSpreadsheet()
+  setInterval(maybeRunScheduledShippingSpreadsheet, SHIPPING_SPREADSHEET_SCHEDULE_CHECK_MS)
 })
 
 process.on('SIGINT', () => {

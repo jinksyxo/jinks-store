@@ -32,6 +32,20 @@ export async function getPublicShirtInventory() {
   return payload.inventory
 }
 
+export async function subscribeToNewsletter(email) {
+  const payload = await parseJsonResponse(
+    await fetch('/api/newsletter/subscribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email }),
+    }),
+  )
+
+  return Boolean(payload.subscribed)
+}
+
 export async function createCheckoutSession(items, customerEmail) {
   const payload = await parseJsonResponse(
     await fetch('/api/checkout/session', {
@@ -178,6 +192,30 @@ export async function createStoreBackup() {
   return payload.backup
 }
 
+export async function getShippingSpreadsheets() {
+  const payload = await parseJsonResponse(
+    await fetch('/api/admin/shipping-spreadsheets', {
+      credentials: 'include',
+    }),
+  )
+
+  return {
+    spreadsheets: payload.spreadsheets ?? [],
+    pendingOrderCount: payload.pendingOrderCount ?? 0,
+  }
+}
+
+export async function generateShippingSpreadsheet() {
+  const payload = await parseJsonResponse(
+    await fetch('/api/admin/shipping-spreadsheets/generate', {
+      method: 'POST',
+      credentials: 'include',
+    }),
+  )
+
+  return payload.result
+}
+
 export async function updateSharedShirtInventory(inventory) {
   const payload = await parseJsonResponse(
     await fetch('/api/admin/shirt-inventory', {
@@ -223,7 +261,7 @@ export async function deleteStoredProduct(productId) {
 }
 
 export async function loginToDevPortal(password) {
-  await parseJsonResponse(
+  return parseJsonResponse(
     await fetch('/api/admin/login', {
       method: 'POST',
       headers: {
@@ -231,6 +269,19 @@ export async function loginToDevPortal(password) {
       },
       credentials: 'include',
       body: JSON.stringify({ password }),
+    }),
+  )
+}
+
+export async function verifyDevPortalTwoFactorCode(challengeToken, code) {
+  return parseJsonResponse(
+    await fetch('/api/admin/login/verify-2fa', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ challengeToken, code }),
     }),
   )
 }

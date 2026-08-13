@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /dev
+Disallow: /dev/
+Disallow: /checkout
+Disallow: /checkout/return
+
+Sitemap: https://matsumotoshop.com/sitemap.xml
