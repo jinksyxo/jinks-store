@@ -151,8 +151,8 @@
   position: absolute;
   right: 5px;
   top: calc(-0.72em + 50px);
-  width: 3.45rem;
-  height: 3.45rem;
+  width: clamp(1.9rem, 5vw, 3.45rem);
+  height: clamp(1.9rem, 5vw, 3.45rem);
   object-fit: contain;
   pointer-events: none;
 }
@@ -459,11 +459,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: calc(0.45rem + 5px);
-  min-height: 2rem;
-  padding: 0.22rem 0.45rem;
+  gap: clamp(0.3rem, 1.4vw, 0.72rem);
+  min-height: clamp(1.3rem, 4vw, 2rem);
+  padding: clamp(0.15rem, 0.5vw, 0.3rem) clamp(0.3rem, 1vw, 0.5rem);
   color: var(--text-h);
-  font-size: calc(clamp(0.95rem, 1.2vw, 1.15rem) + 7pt);
+  font-size: clamp(0.66rem, 2.9vw, 1.73rem);
   line-height: 1;
   text-decoration: none;
   text-align: center;
@@ -477,8 +477,8 @@
 
 .map-stop::before {
   content: '';
-  width: calc(0.55rem + 2px);
-  height: calc(0.55rem + 2px);
+  width: clamp(0.32rem, 1vw, 0.68rem);
+  height: clamp(0.32rem, 1vw, 0.68rem);
   background: #003bd1;
   flex: 0 0 auto;
 }
@@ -2400,14 +2400,8 @@
     margin-right: 0;
   }
 
-  .network-copy h1 {
-    max-width: none;
-    white-space: normal;
-  }
-
-  .network-map {
-    width: 100%;
-    margin-top: -0.5rem;
+  .network-section {
+    display: none;
   }
 
   .featured-ticker-track {
@@ -2488,10 +2482,7 @@
   }
 
   .map-stop {
-    min-height: 1.9rem;
-    max-width: 6rem;
-    padding: 0.25rem 0.4rem;
-    font-size: 0.82rem;
+    max-width: 4.5rem;
     white-space: normal;
   }
 

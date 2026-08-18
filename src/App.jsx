@@ -226,7 +226,7 @@ const merchPageContent = {
     eyebrow: '',
     title: 'other merchandise',
     intro:
-      'A holding page for posters, hats, totes, small print objects, and whatever else belongs in the wider Matsumoto universe.',
+      'hand-designed items made with the heart of matsumoto',
     cards: products.map((product, index) => ({
       ...product,
       name: ['Poster Edition', 'Tote Bag', 'Cap', 'Zine Bundle'][index],
@@ -260,27 +260,6 @@ const merchPageContent = {
     ],
   },
 }
-
-const faqContent = [
-  {
-    kicker: 'shipping',
-    title: 'When do orders go out?',
-    copy:
-      'Use this answer slot for dispatch windows, preorder timing, or any note about how quickly orders leave the studio.',
-  },
-  {
-    kicker: 'returns',
-    title: 'Can customers return items?',
-    copy:
-      'Replace this text later with your real return policy, exchange rules, and any final-sale exceptions.',
-  },
-  {
-    kicker: 'sizing',
-    title: 'How should customers choose sizing?',
-    copy:
-      'This section can point people toward garment measurements, fit notes, or a dedicated sizing page when one exists.',
-  },
-]
 
 const termsOfServiceContent = {
   overview: [
@@ -1835,7 +1814,6 @@ function ContactPage() {
   return (
     <section className="about-section route-section">
       <div className="about-card contact-card-simple">
-        <p className="eyebrow">contact</p>
         <h2>jinks@matsumotoshop.com</h2>
         <p>please email here with any inquiries, and we will get right back to you. thank you!</p>
         <a className="button button-primary" href="mailto:jinks@matsumotoshop.com">
@@ -1846,46 +1824,33 @@ function ContactPage() {
   )
 }
 
-function FaqPage({ onNavigate }) {
+function FaqPage() {
   return (
-    <>
-      <section className="notes-section route-section">
-        <div className="notes-copy">
-          <p className="eyebrow">FAQ</p>
-          <h2>common questions.</h2>
-          <p>
-            A placeholder page for shipping, sizing, returns, and the usual
-            store questions that are better answered before checkout.
-          </p>
-          <a
-            className="button button-secondary notes-button"
-            href="/"
-            onClick={(event) => onNavigate(event, '/')}
-          >
-            Back to map
-          </a>
-        </div>
+    <section className="about-section route-section">
+      <div className="about-card">
+        <h2>frequently asked questions</h2>
 
-        <div className="newsletter-card">
-          <p className="panel-label">support note</p>
-          <h3>Keep answers direct.</h3>
-          <p>
-            This page should stay functional and short. Good FAQ pages reduce
-            support email without feeling like policy paperwork.
-          </p>
-        </div>
-      </section>
+        <h3>When do orders go out?</h3>
+        <p>
+          Shirts are made-to-order, and will be shipped within a week of
+          purchase, on a Monday, Wednesday, or Friday.
+        </p>
 
-      <section className="category-rail">
-        {faqContent.map((item) => (
-          <article className="category-panel" key={item.title}>
-            <p className="eyebrow">{item.kicker}</p>
-            <h3>{item.title}</h3>
-            <p>{item.copy}</p>
-          </article>
-        ))}
-      </section>
-    </>
+        <h3>What is the refund process like?</h3>
+        <p>
+          If you are unhappy with your purchase, please email{' '}
+          <a href="mailto:jinks@matsumotoshop.com">jinks@matsumotoshop.com</a>
+          , and explain why. Depending on the situation, store credit may be
+          administered.
+        </p>
+
+        <h3>How do I know what size to order?</h3>
+        <p>
+          Specific measurements and widths can be found in the table found on
+          each product page.
+        </p>
+      </div>
+    </section>
   )
 }
 
@@ -2149,10 +2114,31 @@ function SocialIcon({ kind }) {
 }
 
 function AsciiAnimation() {
+  const videoRef = useRef(null)
+
+  useEffect(() => {
+    const video = videoRef.current
+
+    if (!video) {
+      return
+    }
+
+    // Mobile autoplay only fires reliably when `muted` is set as a DOM
+    // property before play() is attempted — the JSX `muted` attribute alone
+    // doesn't always win that race, especially on iOS Safari.
+    video.muted = true
+    const playPromise = video.play()
+
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {})
+    }
+  }, [])
+
   return (
     <video
+      ref={videoRef}
       className="ascii-gif"
-      src="/footer-animation.mov"
+      src="/footer-animation.mp4"
       aria-label="Looping footer animation"
       autoPlay
       loop
@@ -2312,7 +2298,7 @@ function renderPage(
   }
 
   if (pathname === '/faq') {
-    return <FaqPage onNavigate={onNavigate} />
+    return <FaqPage />
   }
 
   if (pathname === '/tos') {
