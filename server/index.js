@@ -389,6 +389,10 @@ const STORE_SCHEMA_SQL = `
     created_at TEXT NOT NULL,
     payload TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `
 
 if (USE_HOSTED_DATABASE && !TURSO_AUTH_TOKEN) {
@@ -825,6 +829,56 @@ async function writeRemoteShirtInventory(inventory) {
     `,
     args: [JSON.stringify(normalizeShirtInventory(inventory))],
   })
+}
+
+// Small durable key/value store for one-off app state (e.g. "did the
+// scheduled shipping spreadsheet already run today") that must survive
+// process restarts -- unlike a plain module-level variable, which resets on
+// every deploy.
+async function readAppSetting(key) {
+  if (USE_HOSTED_DATABASE) {
+    if (!remoteStoreClient) {
+      throw new Error('Hosted database client is not configured.')
+    }
+
+    const result = await remoteStoreClient.execute({
+      sql: 'SELECT value FROM app_settings WHERE key = ?',
+      args: [key],
+    })
+    const row = result.rows[0] ? readLibsqlRow(result.rows[0]) : null
+    return row ? row.value : null
+  }
+
+  const row = localStoreDb.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)
+  return row ? row.value : null
+}
+
+async function writeAppSetting(key, value) {
+  if (USE_HOSTED_DATABASE) {
+    if (!remoteStoreClient) {
+      throw new Error('Hosted database client is not configured.')
+    }
+
+    await remoteStoreClient.execute({
+      sql: `
+        INSERT INTO app_settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `,
+      args: [key, value],
+    })
+    return
+  }
+
+  localStoreDb
+    .prepare(
+      `
+        INSERT INTO app_settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `,
+    )
+    .run(key, value)
 }
 
 async function readShirtInventory() {
@@ -1856,7 +1910,7 @@ async function generateShippingSpreadsheet({ trigger = 'manual' } = {}) {
   }
 }
 
-let lastShippingSpreadsheetScheduleCheckKey = null
+const SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY = 'shipping_spreadsheet_last_run_date'
 
 async function maybeRunScheduledShippingSpreadsheet() {
   const { weekday, hour, dateKey } = getZonedDateParts(new Date(), SHIPPING_SPREADSHEET_TIMEZONE)
@@ -1865,11 +1919,16 @@ async function maybeRunScheduledShippingSpreadsheet() {
     return
   }
 
-  if (lastShippingSpreadsheetScheduleCheckKey === dateKey) {
+  // Persisted in the database, not a module-level variable -- a plain
+  // in-memory flag resets on every process restart, so a redeploy during the
+  // trigger window on a scheduled day would re-send the email every time.
+  const lastRunDateKey = await readAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY)
+
+  if (lastRunDateKey === dateKey) {
     return
   }
 
-  lastShippingSpreadsheetScheduleCheckKey = dateKey
+  await writeAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY, dateKey)
 
   try {
     const result = await generateShippingSpreadsheet({ trigger: 'scheduled' })
