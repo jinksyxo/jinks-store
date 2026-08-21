@@ -133,8 +133,8 @@ export default function TrackOrderPage({ onNavigate }) {
       <div className="cart-layout">
         <form className="newsletter-card" onSubmit={handleSubmit}>
           <p className="panel-label">order lookup</p>
-          <div className="product-form">
-            <label className="product-quantity-field">
+          <div className="product-form track-order-form">
+            <label className="track-order-field">
               <span>Order reference</span>
               <input
                 type="text"
@@ -144,7 +144,7 @@ export default function TrackOrderPage({ onNavigate }) {
                 required
               />
             </label>
-            <label className="product-quantity-field">
+            <label className="track-order-field track-order-field-email">
               <span>Email</span>
               <input
                 type="email"

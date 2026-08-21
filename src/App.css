@@ -1343,6 +1343,30 @@
   box-sizing: border-box;
 }
 
+.track-order-form {
+  max-width: 26rem;
+}
+
+.track-order-field {
+  display: grid;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.track-order-field-email {
+  margin-bottom: 1.25rem;
+}
+
+.track-order-field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-h);
+  padding: 0.78rem 0.85rem;
+  font: inherit;
+  box-sizing: border-box;
+}
+
 .product-stock-note,
 .cart-summary p {
   margin: 0;

@@ -179,6 +179,10 @@ export async function getCustomers() {
   return payload.customers ?? []
 }
 
+// Returns { order, shippedEmail }. shippedEmail is null unless this update
+// just changed the tracking number to a new value, in which case it's
+// { sent, error } describing whether the customer's shipping notification
+// email went out.
 export async function updateStripeOrder(orderSessionId, updates) {
   const payload = await parseJsonResponse(
     await fetch(`/api/admin/orders/${encodeURIComponent(orderSessionId)}`, {
@@ -191,7 +195,7 @@ export async function updateStripeOrder(orderSessionId, updates) {
     }),
   )
 
-  return payload.order
+  return { order: payload.order, shippedEmail: payload.shippedEmail || null }
 }
 
 export async function updateCustomer(customerEmail, updates) {

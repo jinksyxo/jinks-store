@@ -513,17 +513,31 @@ function OrdersList({ orders, onSaveOrder, savingOrderId }) {
       return
     }
 
-    const didSave = await onSaveOrder(sessionId, draft)
+    const { ok, shippedEmail } = await onSaveOrder(sessionId, draft)
 
-    if (didSave) {
+    if (ok) {
       setDraftOverrides((currentDrafts) => {
         const nextDrafts = { ...currentDrafts }
         delete nextDrafts[sessionId]
         return nextDrafts
       })
+
+      let message = { text: 'Fulfillment details saved.', tone: 'success' }
+      if (shippedEmail?.sent) {
+        message = {
+          text: 'Fulfillment details saved. Tracking email sent to the customer.',
+          tone: 'success',
+        }
+      } else if (shippedEmail && !shippedEmail.sent) {
+        message = {
+          text: `Fulfillment details saved, but the tracking email failed: ${shippedEmail.error || 'unknown error'}`,
+          tone: 'error',
+        }
+      }
+
       setMessages((currentMessages) => ({
         ...currentMessages,
-        [sessionId]: 'Fulfillment details saved.',
+        [sessionId]: message,
       }))
     }
   }
@@ -640,7 +654,13 @@ function OrdersList({ orders, onSaveOrder, savingOrderId }) {
 
           <div className="dev-order-footer">
             {messages[order.sessionId] ? (
-              <p className="dev-form-success">{messages[order.sessionId]}</p>
+              <p
+                className={
+                  messages[order.sessionId].tone === 'error' ? 'dev-form-error' : 'dev-form-success'
+                }
+              >
+                {messages[order.sessionId].text}
+              </p>
             ) : null}
             <button
               type="button"
@@ -1620,11 +1640,11 @@ function DevPage({
     setOrdersError('')
 
     try {
-      const updatedOrder = await updateStripeOrder(sessionId, draft)
+      const { order: updatedOrder, shippedEmail } = await updateStripeOrder(sessionId, draft)
       setOrders((currentOrders) =>
         currentOrders.map((order) => (order.sessionId === sessionId ? updatedOrder : order)),
       )
-      return true
+      return { ok: true, shippedEmail }
     } catch (error) {
       if (String(error.message || '').toLowerCase().includes('unauthorized')) {
         setIsUnlocked(false)
@@ -1632,7 +1652,7 @@ function DevPage({
       } else {
         setOrdersError(error.message || 'The order could not be updated.')
       }
-      return false
+      return { ok: false, shippedEmail: null }
     } finally {
       setSavingOrderId('')
     }

@@ -1856,6 +1856,103 @@ async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt 
   }
 }
 
+// Builds a direct link to a carrier's own tracking page. Returns null for
+// carriers we don't recognize (the raw tracking number is still shown, just
+// without a clickable link).
+function buildCarrierTrackingUrl(carrier, trackingNumber) {
+  if (!trackingNumber) {
+    return null
+  }
+
+  const normalizedCarrier = String(carrier || '').trim().toLowerCase()
+  const encodedNumber = encodeURIComponent(trackingNumber)
+
+  if (normalizedCarrier.includes('usps')) {
+    return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodedNumber}`
+  }
+
+  if (normalizedCarrier.includes('ups')) {
+    return `https://www.ups.com/track?loc=en_US&tracknum=${encodedNumber}`
+  }
+
+  if (normalizedCarrier.includes('fedex')) {
+    return `https://www.fedex.com/fedextrack/?trknbr=${encodedNumber}`
+  }
+
+  if (normalizedCarrier.includes('dhl')) {
+    return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodedNumber}`
+  }
+
+  return null
+}
+
+async function sendOrderShippedEmail(order) {
+  if (!RESEND_API_KEY) {
+    return { sent: false, error: 'RESEND_API_KEY is not configured.' }
+  }
+
+  if (!order.customerEmail) {
+    return { sent: false, error: 'Order has no customer email on file.' }
+  }
+
+  const trackOrderUrl = `${APP_URL.replace(/\/$/, '')}/track-order?ref=${encodeURIComponent(
+    order.checkoutReference || order.sessionId,
+  )}&email=${encodeURIComponent(order.customerEmail)}`
+  const carrierTrackingUrl = buildCarrierTrackingUrl(order.shippingCarrier, order.trackingNumber)
+  const carrierLabel = order.shippingCarrier ? ` via ${order.shippingCarrier}` : ''
+  const subject = 'Your matsumoto* order has shipped'
+  const text = [
+    `Your order is on its way${carrierLabel}.`,
+    order.trackingNumber ? `Tracking number: ${order.trackingNumber}` : null,
+    carrierTrackingUrl ? `Track it: ${carrierTrackingUrl}` : null,
+    `Order status: ${trackOrderUrl}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const html = [
+    `<p>Your order is on its way${carrierLabel}.</p>`,
+    order.trackingNumber
+      ? `<p><strong>Tracking number:</strong> ${
+          carrierTrackingUrl
+            ? `<a href="${carrierTrackingUrl}">${order.trackingNumber}</a>`
+            : order.trackingNumber
+        }</p>`
+      : '',
+    `<p><a href="${trackOrderUrl}">View your order status</a></p>`,
+  ]
+    .filter(Boolean)
+    .join('')
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: RESEND_FROM_EMAIL,
+        to: [order.customerEmail],
+        subject,
+        text,
+        html,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorBody = await response.text()
+      return {
+        sent: false,
+        error: `Resend responded with ${response.status}: ${errorBody.slice(0, 300)}`,
+      }
+    }
+
+    return { sent: true, error: null }
+  } catch (error) {
+    return { sent: false, error: error.message || 'Email request failed.' }
+  }
+}
+
 async function generateShippingSpreadsheet({ trigger = 'manual' } = {}) {
   const orders = await readStripeOrders()
   const shippableOrders = getUnclaimedShippableOrders(orders)
@@ -3608,7 +3705,19 @@ const server = http.createServer(async (request, response) => {
         orders.map((order) => (order.sessionId === sessionId ? updatedOrder : order)),
       )
 
-      jsonResponse(response, 200, { order: publicStripeOrder(updatedOrder) })
+      // Email the customer their tracking info the moment a tracking number
+      // is newly added or changed to something different -- not on every
+      // save, so editing fulfillment notes or refund status doesn't spam a
+      // repeat "shipped" email.
+      let shippedEmail = null
+      const trackingNumberChanged =
+        updatedOrder.trackingNumber && updatedOrder.trackingNumber !== existingOrder.trackingNumber
+
+      if (trackingNumberChanged) {
+        shippedEmail = await sendOrderShippedEmail(updatedOrder)
+      }
+
+      jsonResponse(response, 200, { order: publicStripeOrder(updatedOrder), shippedEmail })
       return
     }
 
