@@ -373,6 +373,19 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
                 onChange={(event) => updateSectionStatus('payment', event)}
                 options={{
                   layout: 'tabs',
+                  // Name/email/phone/address are all collected explicitly via
+                  // the Contact/Shipping/Billing elements above (and passed
+                  // into confirm() directly), so tell the Payment Element not
+                  // to collect them again -- Stripe rejects confirm() if the
+                  // same billing field is supplied twice.
+                  fields: {
+                    billingDetails: {
+                      name: 'never',
+                      email: 'never',
+                      phone: 'never',
+                      address: 'never',
+                    },
+                  },
                 }}
               />
             </div>
