@@ -46,7 +46,7 @@ export async function subscribeToNewsletter(email) {
   return Boolean(payload.subscribed)
 }
 
-export async function createCheckoutSession(items, customerEmail) {
+export async function createCheckoutSession(items, customerEmail, promoCode) {
   const payload = await parseJsonResponse(
     await fetch('/api/checkout/session', {
       method: 'POST',
@@ -56,7 +56,27 @@ export async function createCheckoutSession(items, customerEmail) {
       body: JSON.stringify({
         items,
         customerEmail,
+        promoCode,
       }),
+    }),
+  )
+
+  return payload
+}
+
+// Validates a customer-typed promo code against Stripe's active promotion
+// codes. Returns { valid: false, error } when the code doesn't exist or has
+// expired, or { valid: true, code, description, percentOff, amountOff,
+// currency } when it does. This is only ever an estimate for the cart page —
+// the code is re-validated server-side again at checkout session creation.
+export async function validatePromoCode(code) {
+  const payload = await parseJsonResponse(
+    await fetch('/api/promo-code/validate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ code }),
     }),
   )
 

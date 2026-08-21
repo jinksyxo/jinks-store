@@ -176,6 +176,7 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
   const missingShippingFields = getMissingAddressFields(addressValues.shipping)
   const missingBillingFields = getMissingAddressFields(addressValues.billing)
   const subtotalCents = Number(checkout.total?.subtotal?.minorUnitsAmount || 0)
+  const discountCents = Number(checkout.total?.discount?.minorUnitsAmount || 0)
   const selectedShippingCents =
     Number(checkout.shipping?.shippingOption?.minorUnitsAmount || 0) ||
     estimateStandardShippingCents(subtotalCents)
@@ -293,7 +294,6 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
               {showSectionErrors && hasIncompleteSection('contact') ? (
                 <p className="checkout-element-error">{sectionErrors.contact}</p>
               ) : null}
-              <span>Email for receipt, invoice, and updates</span>
             </div>
             <div className="checkout-element-frame">
               <ContactDetailsElement onChange={(event) => updateSectionStatus('contact', event)} />
@@ -306,7 +306,6 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
               {showSectionErrors && hasIncompleteSection('shipping') ? (
                 <p className="checkout-element-error">{sectionErrors.shipping}</p>
               ) : null}
-              <span>Address details for delivery, rates, and tax calculation</span>
             </div>
             <div className="checkout-element-frame">
               <ShippingAddressElement
@@ -356,7 +355,6 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
               {showSectionErrors && hasIncompleteSection('payment') ? (
                 <p className="checkout-element-error">{sectionErrors.payment}</p>
               ) : null}
-              <span>Shipping, tax, and receipt totals update here before confirmation</span>
             </div>
             <div className="checkout-element-frame">
               <PaymentElement
@@ -379,9 +377,6 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
             >
               {isSubmitting ? 'Processing…' : 'Pay now'}
             </button>
-            <p className="checkout-submit-note">
-              Stripe will collect full billing details, calculate shipping and tax, and send the final paid receipt and invoice email.
-            </p>
           </div>
         </form>
       </div>
@@ -397,7 +392,7 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
             <div className="checkout-line-item" key={item.id}>
               <div>
                 <strong>
-                  {item.name} <span className="checkout-line-item-quantity">x{item.quantity}</span>
+                  {item.name} <span className="checkout-line-item-quantity">x {item.quantity}</span>
                 </strong>
               </div>
               <span>{item.total.amount}</span>
@@ -409,6 +404,12 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
             <span>Subtotal</span>
             <strong>{formatCurrency(subtotalCents / 100)}</strong>
           </div>
+          {discountCents > 0 ? (
+            <div className="order-summary-row order-summary-row-discount">
+              <span>Discount</span>
+              <strong>-{formatCurrency(discountCents / 100)}</strong>
+            </div>
+          ) : null}
           <div className="order-summary-row">
             <span>{shippingLabel}</span>
             <strong>{formatCurrency(selectedShippingCents / 100)}</strong>
@@ -422,9 +423,6 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
             <strong>{formatCurrency(totalCents / 100)}</strong>
           </div>
         </div>
-        <p className="checkout-summary-note">
-          Shipping and tax update live from Stripe as the address and selected rate change.
-        </p>
       </aside>
     </div>
   )
@@ -713,7 +711,7 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
   )
 }
 
-export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mode = 'live' }) {
+export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mode = 'live', promoCode }) {
   const [checkoutState, setCheckoutState] = useState({
     requestKey: '',
     session: null,
@@ -737,7 +735,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
       : resumeSessionId
         ? `resume:${resumeSessionId}`
         : cart.length
-          ? `new:${checkoutItemsKey}`
+          ? `new:${checkoutItemsKey}:${promoCode?.code || ''}`
           : ''
   const resolvedCheckoutState = checkoutState.requestKey === requestKey ? checkoutState : null
   const checkoutSession = resolvedCheckoutState?.session || null
@@ -824,7 +822,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
     const items = JSON.parse(checkoutItemsKey)
     let isActive = true
 
-    createCheckoutSession(items)
+    createCheckoutSession(items, undefined, promoCode?.code)
       .then((session) => {
         if (!isActive) {
           return
@@ -851,7 +849,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
     return () => {
       isActive = false
     }
-  }, [cart.length, checkoutItemsKey, completion, mode, requestKey, resumeSessionId])
+  }, [cart.length, checkoutItemsKey, completion, mode, promoCode, requestKey, resumeSessionId])
 
   const handlePaymentComplete = (session) => {
     setCompletion({
@@ -915,8 +913,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
   return (
     <section className="featured-section shop-section page-template checkout-live-page">
       <div className="section-heading checkout-heading">
-        <p className="eyebrow">checkout</p>
-        <h2>finish the order</h2>
+        <h2>checkout</h2>
       </div>
 
       <div className="checkout-shell">

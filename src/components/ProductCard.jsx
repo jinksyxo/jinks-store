@@ -1,3 +1,7 @@
+// Temporarily hidden storewide — no ash-grey product photos exist yet.
+// Remove 'ash-grey' from this list once ash-grey items are ready to sell.
+const HIDDEN_COLOR_OPTIONS = ['ash-grey']
+
 function ProductCard({ product, onNavigate }) {
   const formatCurrency = (value) =>
     new Intl.NumberFormat('en-US', {
@@ -16,8 +20,8 @@ function ProductCard({ product, onNavigate }) {
   const primaryImage = imageUrl(primaryProductImage) || '/tee-mockup.png'
   const hoverImage = imageUrl(secondaryProductImage) || primaryImage || '/tee-mockup-hover.jpg'
   const hasDeal = product.hasDeal && product.salePrice
-  const colorSummary =
-    product.colors?.length ? product.colors.map(formatColorLabel).join(', ') : null
+  const sellableColors = product.colors?.filter((color) => !HIDDEN_COLOR_OPTIONS.includes(color))
+  const colorSummary = sellableColors?.length ? sellableColors.map(formatColorLabel).join(', ') : null
   const variantSummary = [colorSummary, sizeSummary].filter(Boolean).join(' • ') || null
   const productHref = `/products/${product.slug}`
 

@@ -2787,6 +2787,54 @@ function resolveCheckoutLineItems(products, shirtInventory, requestedItems) {
   return { errors, lineItems }
 }
 
+// Looks up a customer-facing promo code (e.g. "SAVE20") and returns the
+// active Stripe Promotion Code object, or null if it doesn't exist, isn't
+// active, or its underlying coupon is no longer valid (expired, maxed out
+// on redemptions, etc). Always re-run this server-side right before using a
+// code — never trust a promotion code id handed back by the client.
+async function findActivePromotionCode(code) {
+  const normalizedCode = String(code || '').trim()
+
+  if (!normalizedCode || !stripeClient) {
+    return null
+  }
+
+  const result = await stripeClient.promotionCodes.list({
+    code: normalizedCode,
+    active: true,
+    limit: 1,
+  })
+
+  const promotionCode = result.data[0]
+
+  if (!promotionCode || !promotionCode.coupon?.valid) {
+    return null
+  }
+
+  return promotionCode
+}
+
+function formatCouponDescription(coupon) {
+  if (!coupon) {
+    return ''
+  }
+
+  if (coupon.percent_off) {
+    return `${coupon.percent_off}% off`
+  }
+
+  if (coupon.amount_off) {
+    const currency = String(coupon.currency || 'usd').toUpperCase()
+    const formattedAmount = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+    }).format(coupon.amount_off / 100)
+    return `${formattedAmount} off`
+  }
+
+  return 'Discount applied'
+}
+
 function imageExtensionFromType(type) {
   if (type === 'image/png') return '.png'
   if (type === 'image/webp') return '.webp'
@@ -3043,6 +3091,38 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (request.method === 'POST' && pathname === '/api/promo-code/validate') {
+      if (!stripeClient) {
+        jsonResponse(response, 503, { valid: false, error: 'Stripe secret key is not configured.' })
+        return
+      }
+
+      const body = await readJsonBody(request)
+      const code = String(body.code || '').trim()
+
+      if (!code) {
+        jsonResponse(response, 400, { valid: false, error: 'Enter a promo code.' })
+        return
+      }
+
+      const promotionCode = await findActivePromotionCode(code)
+
+      if (!promotionCode) {
+        jsonResponse(response, 200, { valid: false, error: 'That code is not valid or has expired.' })
+        return
+      }
+
+      jsonResponse(response, 200, {
+        valid: true,
+        code: promotionCode.code,
+        description: formatCouponDescription(promotionCode.coupon),
+        percentOff: promotionCode.coupon.percent_off || null,
+        amountOff: promotionCode.coupon.amount_off || null,
+        currency: promotionCode.coupon.currency || null,
+      })
+      return
+    }
+
     if (request.method === 'POST' && pathname === '/api/checkout/session') {
       const body = await readJsonBody(request)
       const payloadErrors = validateCheckoutPayload(body)
@@ -3071,11 +3151,27 @@ const server = http.createServer(async (request, response) => {
         (sum, lineItem) => sum + Number(lineItem.price_data?.unit_amount || 0) * Number(lineItem.quantity || 0),
         0,
       )
+
+      // Re-validate the promo code right before creating the session — never trust
+      // a promotion code id handed back by the client, and codes are only
+      // applicable at session creation (the Update Session API can't change
+      // discounts afterward), so this is the last chance to attach it.
+      let discounts
+      if (typeof body.promoCode === 'string' && body.promoCode.trim()) {
+        const promotionCode = await findActivePromotionCode(body.promoCode)
+        if (!promotionCode) {
+          jsonResponse(response, 400, { errors: ['That promo code is no longer valid.'] })
+          return
+        }
+        discounts = [{ promotion_code: promotionCode.id }]
+      }
+
       const session = await stripeClient.checkout.sessions.create({
         mode: 'payment',
         ui_mode: 'custom',
         return_url: `${APP_URL}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
         line_items: lineItems,
+        ...(discounts ? { discounts } : {}),
         customer_creation: 'always',
         shipping_address_collection: {
           allowed_countries: STRIPE_ALLOWED_SHIPPING_COUNTRIES,

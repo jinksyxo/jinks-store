@@ -1817,7 +1817,8 @@ function DevPage({
           href="/"
           onClick={(event) => onNavigate(event, '/')}
         >
-          Back to map
+          <span className="back-label-desktop">Back to map</span>
+          <span className="back-label-mobile">Back to home</span>
         </a>
         <button
           type="button"

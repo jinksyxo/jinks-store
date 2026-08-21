@@ -13,6 +13,7 @@ import {
   saveStoredProduct,
   subscribeToNewsletter,
   updateStoredProduct,
+  validatePromoCode,
 } from './lib/devPortalStore'
 import { buildEstimatedOrderSummary, FREE_SHIPPING_THRESHOLD_CENTS } from './lib/orderSummary'
 
@@ -118,8 +119,8 @@ const featuredFallbackItems = [
 
 const tickerItems = [
   'free domestic shipping over $65',
-  'new drop every two weeks',
-  'hand-printed in small runs',
+  'new drops every two weeks',
+  'hand-printed on order',
   'limited stock once live',
 ]
 
@@ -144,7 +145,7 @@ const merchPageContent = {
     eyebrow: '',
     title: 'tees',
     intro:
-      'Use this page for the core shirt line: standard logo tees, art tees, and the main print runs that define the season.',
+      'hand-printed tees designed with the heart of matsumoto',
     cards: products,
     details: [],
   },
@@ -789,6 +790,15 @@ const footerPolicyLinks = [
 const COLOR_OPTIONS = ['black', 'white', 'ash-grey']
 const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL']
 const CART_STORAGE_KEY = 'matsumoto_cart_v1'
+const PROMO_CODE_STORAGE_KEY = 'matsumoto_promo_v1'
+
+// Temporarily hidden storewide — no ash-grey product photos exist yet.
+// Remove 'ash-grey' from this list once ash-grey items are ready to sell.
+const HIDDEN_COLOR_OPTIONS = ['ash-grey']
+
+function getSellableColors(colors) {
+  return Array.isArray(colors) ? colors.filter((color) => !HIDDEN_COLOR_OPTIONS.includes(color)) : []
+}
 
 function slugify(value) {
   return String(value || '')
@@ -867,6 +877,19 @@ function readCartStorage() {
     return Array.isArray(parsedCart) ? parsedCart : []
   } catch {
     return []
+  }
+}
+
+function readPromoCodeStorage() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const rawPromo = window.localStorage.getItem(PROMO_CODE_STORAGE_KEY)
+    return rawPromo ? JSON.parse(rawPromo) : null
+  } catch {
+    return null
   }
 }
 
@@ -1031,6 +1054,10 @@ function mapTitle() {
   )
 }
 
+// Hidden until real Utah local collection product photos are ready. Flip
+// back to true to bring the section back.
+const SHOW_UTAH_LOCAL_COLLECTION = false
+
 function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
   const tickerTrackRef = useRef(null)
   const tickerGroupRef = useRef(null)
@@ -1127,22 +1154,24 @@ function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
         </div>
       </div>
 
-      <div className="featured-carousel">
-        <div className="featured-carousel-copy">
-          <h2 id="utah-local-collection-heading">utah local collection</h2>
+      {SHOW_UTAH_LOCAL_COLLECTION ? (
+        <div className="featured-carousel">
+          <div className="featured-carousel-copy">
+            <h2 id="utah-local-collection-heading">utah local collection</h2>
+          </div>
+
+          <LiquidGlassCarouselSection
+            title="utah local collection"
+            headingId="utah-local-collection-heading"
+            items={utahItems}
+            onNavigate={onNavigate}
+          />
         </div>
-
-        <LiquidGlassCarouselSection
-          title="utah local collection"
-          headingId="utah-local-collection-heading"
-          items={utahItems}
-          onNavigate={onNavigate}
-        />
-      </div>
+      ) : null}
 
       <div className="featured-carousel">
         <div className="featured-carousel-copy">
-          <h2 id="featured-items-heading">collection preview</h2>
+          <h2 id="featured-items-heading">featured collection</h2>
         </div>
 
         <div className="featured-carousel-stage">
@@ -1315,7 +1344,8 @@ function CategoryPage({ content, onNavigate }) {
             href="/"
             onClick={(event) => onNavigate(event, '/')}
           >
-            Back to map
+            <span className="back-label-desktop">Back to map</span>
+            <span className="back-label-mobile">Back to home</span>
           </a>
         </div>
 
@@ -1348,9 +1378,17 @@ function CategoryPage({ content, onNavigate }) {
 }
 
 function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNavigate }) {
-  const productImages = product.images?.length ? product.images : ['/tee-mockup.png']
+  const rawProductImages = product.images?.length ? product.images : ['/tee-mockup.png']
+  const sellableColors = getSellableColors(product.colors)
+  const hiddenColorImages = rawProductImages.filter((image) =>
+    HIDDEN_COLOR_OPTIONS.includes(image?.color),
+  )
+  const productImages =
+    hiddenColorImages.length && hiddenColorImages.length < rawProductImages.length
+      ? rawProductImages.filter((image) => !HIDDEN_COLOR_OPTIONS.includes(image?.color))
+      : rawProductImages
   const primaryImageIndex = findPrimaryImageIndex(productImages)
-  const initialSelectedColor = productImages[primaryImageIndex]?.color || product.colors?.[0] || ''
+  const initialSelectedColor = productImages[primaryImageIndex]?.color || sellableColors[0] || ''
   const [selectedColor, setSelectedColor] = useState(initialSelectedColor)
   const [selectedSize, setSelectedSize] = useState(product.allowedSizes?.[0] || '')
   const [activeImageIndex, setActiveImageIndex] = useState(primaryImageIndex)
@@ -1361,20 +1399,20 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
   const availableQuantity = getAvailableQuantity(product, shirtInventory, selectedColor, selectedSize)
   const maxQuantity = availableQuantity === null ? 10 : Math.max(availableQuantity, 1)
   const isOutOfStock = availableQuantity !== null && availableQuantity <= 0
-  const requiresColor = product.colors.length > 0
+  const requiresColor = sellableColors.length > 0
   const requiresSize = product.allowedSizes.length > 0
   const displayPrice = cartUnitPrice(product)
   const showTeeSizeGuide = product.category === '/tees'
 
   const handleColorSelect = (color) => {
     setSelectedColor(color)
-    setActiveImageIndex(findColorImageIndex(productImages, product.colors || [], color))
+    setActiveImageIndex(findColorImageIndex(productImages, sellableColors, color))
   }
 
   const handleImageSelect = (imageIndex) => {
     setActiveImageIndex(imageIndex)
 
-    const imageColor = productImages[imageIndex]?.color || product.colors?.[imageIndex]
+    const imageColor = productImages[imageIndex]?.color || sellableColors[imageIndex]
 
     if (imageColor) {
       setSelectedColor(imageColor)
@@ -1452,7 +1490,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                 const imageUrl = imageUrlFromProductImage(image)
                 const colorLabel =
                   image?.color?.replace('-', ' ') ||
-                  product.colors?.[imageIndex]?.replace('-', ' ') ||
+                  sellableColors[imageIndex]?.replace('-', ' ') ||
                   `image ${imageIndex + 1}`
 
                 return (
@@ -1493,7 +1531,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
               <fieldset className="product-option-group">
                 <legend>Color</legend>
                 <div className="product-chip-list">
-                  {product.colors.map((color) => (
+                  {sellableColors.map((color) => (
                     <button
                       key={color}
                       type="button"
@@ -1605,9 +1643,67 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
   )
 }
 
-function CartPage({ cart, shirtInventory, onNavigate, onRemoveFromCart, onUpdateCartQuantity }) {
+function CartPage({
+  cart,
+  shirtInventory,
+  onNavigate,
+  onRemoveFromCart,
+  onUpdateCartQuantity,
+  promoCode,
+  onApplyPromoCode,
+  onRemovePromoCode,
+}) {
+  const [promoInput, setPromoInput] = useState('')
+  const [promoStatus, setPromoStatus] = useState('idle')
+  const [promoError, setPromoError] = useState('')
+
   const subtotal = cart.reduce((sum, item) => sum + cartUnitPrice(item) * item.quantity, 0)
-  const orderSummary = buildEstimatedOrderSummary(Math.round(subtotal * 100))
+  const orderSummary = buildEstimatedOrderSummary(Math.round(subtotal * 100), undefined, promoCode)
+  // Tax depends on the shipping address, which isn't collected yet on the cart
+  // page — only show the real tax once Stripe calculates it at checkout.
+  const preTaxTotalCents =
+    orderSummary.subtotalCents - orderSummary.discountCents + orderSummary.shippingCents
+
+  const handleApplyPromo = async (event) => {
+    event.preventDefault()
+
+    const trimmedCode = promoInput.trim()
+
+    if (!trimmedCode) {
+      return
+    }
+
+    setPromoStatus('checking')
+    setPromoError('')
+
+    try {
+      const result = await validatePromoCode(trimmedCode)
+
+      if (!result.valid) {
+        setPromoStatus('idle')
+        setPromoError(result.error || 'That code is not valid or has expired.')
+        return
+      }
+
+      onApplyPromoCode({
+        code: result.code,
+        description: result.description,
+        percentOff: result.percentOff,
+        amountOff: result.amountOff,
+        currency: result.currency,
+      })
+      setPromoInput('')
+      setPromoStatus('idle')
+    } catch {
+      setPromoStatus('idle')
+      setPromoError('That code could not be checked right now. Try again in a moment.')
+    }
+  }
+
+  const handleRemovePromo = () => {
+    onRemovePromoCode()
+    setPromoError('')
+  }
 
   if (!cart.length) {
     return (
@@ -1696,31 +1792,70 @@ function CartPage({ cart, shirtInventory, onNavigate, onRemoveFromCart, onUpdate
 
         <aside className="newsletter-card cart-summary">
           <p className="panel-label">summary</p>
-          <h3>{formatCurrency(orderSummary.totalCents / 100)}</h3>
+          <h3>{formatCurrency(preTaxTotalCents / 100)}</h3>
           <div className="order-summary-breakdown">
             <div className="order-summary-row">
               <span>Subtotal</span>
               <strong>{formatCurrency(orderSummary.subtotalCents / 100)}</strong>
             </div>
+            {orderSummary.discountCents > 0 ? (
+              <div className="order-summary-row order-summary-row-discount">
+                <span>Discount ({promoCode.code})</span>
+                <strong>-{formatCurrency(orderSummary.discountCents / 100)}</strong>
+              </div>
+            ) : null}
             <div className="order-summary-row">
               <span>
                 {orderSummary.shippingCents === 0 ? 'Free domestic shipping' : 'Standard shipping'}
               </span>
               <strong>{formatCurrency(orderSummary.shippingCents / 100)}</strong>
             </div>
-            <div className="order-summary-row">
-              <span>Estimated tax (7.25%)</span>
-              <strong>{formatCurrency(orderSummary.taxCents / 100)}</strong>
-            </div>
             <div className="order-summary-row order-summary-row-total">
               <span>Total</span>
-              <strong>{formatCurrency(orderSummary.totalCents / 100)}</strong>
+              <strong>{formatCurrency(preTaxTotalCents / 100)}</strong>
             </div>
           </div>
           <p>
             Standard shipping is free over {formatCurrency(FREE_SHIPPING_THRESHOLD_CENTS / 100)}.
-            Shipping can still change if a different rate is selected in checkout.
+            Tax is calculated at checkout.
           </p>
+
+          <div className="cart-promo">
+            {promoCode ? (
+              <div className="cart-promo-applied">
+                <p>
+                  Code <strong>{promoCode.code}</strong> applied — {promoCode.description}.
+                </p>
+                <button type="button" className="button button-secondary" onClick={handleRemovePromo}>
+                  Remove
+                </button>
+              </div>
+            ) : (
+              <form className="cart-promo-form" onSubmit={handleApplyPromo}>
+                <label className="cart-promo-label" htmlFor="cart-promo-code">
+                  Promo code
+                </label>
+                <div className="cart-promo-field">
+                  <input
+                    id="cart-promo-code"
+                    type="text"
+                    placeholder="Enter code"
+                    value={promoInput}
+                    onChange={(event) => setPromoInput(event.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="button button-secondary"
+                    disabled={promoStatus === 'checking' || !promoInput.trim()}
+                  >
+                    {promoStatus === 'checking' ? 'Checking…' : 'Apply'}
+                  </button>
+                </div>
+                {promoError ? <p className="cart-promo-error">{promoError}</p> : null}
+              </form>
+            )}
+          </div>
+
           <div className="cart-summary-actions">
             <a
               className="button button-primary"
@@ -1803,7 +1938,8 @@ function AboutPage({ onNavigate }) {
           href="/"
           onClick={(event) => onNavigate(event, '/')}
         >
-          Back to map
+          <span className="back-label-desktop">Back to map</span>
+          <span className="back-label-mobile">Back to home</span>
         </a>
       </div>
     </section>
@@ -2070,7 +2206,8 @@ function PolicyPage({ content, onNavigate }) {
             href="/"
             onClick={(event) => onNavigate(event, '/')}
           >
-            Back to map
+            <span className="back-label-desktop">Back to map</span>
+            <span className="back-label-mobile">Back to home</span>
           </a>
         </div>
 
@@ -2216,6 +2353,9 @@ function renderPage(
   onUpdateProduct,
   onDeleteProduct,
   storageError,
+  promoCode,
+  onApplyPromoCode,
+  onRemovePromoCode,
 ) {
   const productSlug = productSlugFromPath(pathname)
   const matchedProduct = productSlug
@@ -2234,6 +2374,9 @@ function renderPage(
         onNavigate={onNavigate}
         onRemoveFromCart={onRemoveFromCart}
         onUpdateCartQuantity={onUpdateCartQuantity}
+        promoCode={promoCode}
+        onApplyPromoCode={onApplyPromoCode}
+        onRemovePromoCode={onRemovePromoCode}
       />
     )
   }
@@ -2244,6 +2387,7 @@ function renderPage(
         cart={cart}
         onNavigate={onNavigate}
         onCheckoutComplete={onCheckoutComplete}
+        promoCode={promoCode}
       />
     )
   }
@@ -2255,6 +2399,7 @@ function renderPage(
         onNavigate={onNavigate}
         onCheckoutComplete={onCheckoutComplete}
         mode="return"
+        promoCode={promoCode}
       />
     )
   }
@@ -2422,6 +2567,7 @@ function App() {
   const [customProducts, setCustomProducts] = useState([])
   const [shirtInventory, setShirtInventory] = useState(null)
   const [cart, setCart] = useState(() => readCartStorage())
+  const [promoCode, setPromoCode] = useState(() => readPromoCodeStorage())
   const [storageError, setStorageError] = useState('')
 
   useEffect(() => {
@@ -2492,6 +2638,14 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart))
   }, [cart])
+
+  useEffect(() => {
+    if (promoCode) {
+      window.localStorage.setItem(PROMO_CODE_STORAGE_KEY, JSON.stringify(promoCode))
+    } else {
+      window.localStorage.removeItem(PROMO_CODE_STORAGE_KEY)
+    }
+  }, [promoCode])
 
   const handleNavigate = (event, nextPath) => {
     if (!shouldHandleClientNav(event)) {
@@ -2609,6 +2763,15 @@ function App() {
 
   const handleCheckoutComplete = () => {
     setCart([])
+    setPromoCode(null)
+  }
+
+  const handleApplyPromoCode = (appliedPromo) => {
+    setPromoCode(appliedPromo)
+  }
+
+  const handleRemovePromoCode = () => {
+    setPromoCode(null)
   }
 
   const featuredItems = buildCollectionItems(
@@ -2638,6 +2801,7 @@ function App() {
           {categoryLinks.map((link) => (
             <a
               key={link.id}
+              className={link.id === 'about' || link.id === 'contact' ? 'topnav-link-secondary' : undefined}
               href={link.href}
               onClick={(event) => handleNavigate(event, link.href)}
             >
@@ -2673,6 +2837,9 @@ function App() {
         handleUpdateProduct,
         handleDeleteProduct,
         storageError,
+        promoCode,
+        handleApplyPromoCode,
+        handleRemovePromoCode,
       )}
       <SiteFooter onNavigate={handleNavigate} />
     </main>
