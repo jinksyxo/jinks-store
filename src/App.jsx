@@ -3,6 +3,7 @@ import './App.css'
 import cartLogo from '../logo asset/cart-logo.png'
 import CheckoutPage from './components/CheckoutPage'
 import DevPage from './components/DevPage'
+import TrackOrderPage from './components/TrackOrderPage'
 import LiquidGlassCarouselSection from './components/LiquidGlassCarousel'
 import ProductCard from './components/ProductCard'
 import { products } from './data/products'
@@ -2403,6 +2404,10 @@ function renderPage(
     )
   }
 
+  if (pathname === '/track-order') {
+    return <TrackOrderPage onNavigate={onNavigate} />
+  }
+
   if (productSlug) {
     if (!matchedProduct) {
       return <ProductMissingPage onNavigate={onNavigate} />
@@ -2546,6 +2551,10 @@ function pageTitle(pathname, productCatalog) {
 
   if (pathname === '/checkout/return') {
     return 'Checkout Return | matsumoto*'
+  }
+
+  if (pathname === '/track-order') {
+    return 'Track Your Order | matsumoto*'
   }
 
   if (matchedProduct) {

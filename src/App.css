@@ -639,6 +639,11 @@
   max-width: 13ch;
 }
 
+.checkout-confirmed-heading {
+  max-width: none;
+  white-space: nowrap;
+}
+
 .category-page-section .section-heading h2 {
   max-width: none;
   white-space: nowrap;

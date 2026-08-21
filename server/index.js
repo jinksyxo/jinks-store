@@ -3300,6 +3300,7 @@ const server = http.createServer(async (request, response) => {
 
       jsonResponse(response, 200, {
         sessionId: session.id,
+        checkoutReference: session.metadata?.checkout_reference || null,
         status: session.status,
         paymentStatus: session.payment_status,
         customerEmail: session.customer_details?.email || session.customer_email || null,
@@ -3315,6 +3316,61 @@ const server = http.createServer(async (request, response) => {
         clientSecret: session.status === 'open' ? session.client_secret || null : null,
         publishableKey: session.status === 'open' ? STRIPE_PUBLISHABLE_KEY : null,
         orderStatus: matchedOrder?.status || null,
+      })
+      return
+    }
+
+    if (request.method === 'POST' && pathname === '/api/orders/track') {
+      const body = await readJsonBody(request)
+      const reference = String(body.reference || '').trim().toLowerCase()
+      const email = String(body.email || '').trim().toLowerCase()
+
+      if (!reference || !email) {
+        jsonResponse(response, 400, { found: false, error: 'Enter your order reference and email.' })
+        return
+      }
+
+      // Looked up from our own order records (populated once the Stripe
+      // webhook fulfills the session), not live from Stripe -- this is what
+      // carries the fulfillment status, carrier, and tracking number an
+      // admin sets later, none of which exist on the Checkout Session
+      // itself. A brand-new order may not show up here for a few seconds
+      // until the webhook finishes.
+      const orders = await readStripeOrders()
+      const matchedOrder = orders.find((order) => {
+        const orderEmail = String(order.customerEmail || '').trim().toLowerCase()
+
+        if (orderEmail !== email) {
+          return false
+        }
+
+        const orderReference = String(order.checkoutReference || '').trim().toLowerCase()
+        const orderSessionId = String(order.sessionId || '').trim().toLowerCase()
+
+        return orderReference === reference || orderSessionId === reference
+      })
+
+      if (!matchedOrder) {
+        jsonResponse(response, 200, { found: false })
+        return
+      }
+
+      jsonResponse(response, 200, {
+        found: true,
+        reference: matchedOrder.checkoutReference || matchedOrder.sessionId,
+        status: matchedOrder.status,
+        fulfillmentStatus: matchedOrder.fulfillmentStatus,
+        refundStatus: matchedOrder.refundStatus,
+        shippingCarrier: matchedOrder.shippingCarrier,
+        trackingNumber: matchedOrder.trackingNumber,
+        shippingMethod: matchedOrder.shippingMethod,
+        shippingDetails: matchedOrder.shippingDetails,
+        amountTotal: matchedOrder.amountTotal,
+        amountSubtotal: matchedOrder.amountSubtotal,
+        amountShipping: matchedOrder.amountShipping,
+        amountTax: matchedOrder.amountTax,
+        lineItems: matchedOrder.lineItems,
+        createdAt: matchedOrder.createdAt,
       })
       return
     }

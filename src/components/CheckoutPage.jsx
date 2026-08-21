@@ -453,6 +453,86 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
   )
 }
 
+// Shared "you paid" view for both ways a customer can land here: an instant
+// confirmation with no redirect, or the /checkout/return flow after a 3D
+// Secure redirect. Both pass a session shaped like buildCheckoutSessionOrderFields
+// on the server (checkoutReference, amountTotal/Subtotal/Shipping/Tax,
+// shippingMethod, shippingDetails, customerEmail, sessionId).
+function PaidConfirmation({ session, onNavigate }) {
+  const trackingReference = session.checkoutReference || session.sessionId
+  const trackOrderHref =
+    trackingReference && session.customerEmail
+      ? `/track-order?ref=${encodeURIComponent(trackingReference)}&email=${encodeURIComponent(session.customerEmail)}`
+      : '/track-order'
+
+  const receiptRows = [
+    typeof session.amountSubtotal === 'number'
+      ? { label: 'Subtotal', value: formatCurrency(session.amountSubtotal / 100) }
+      : null,
+    { label: 'Shipping', value: formatCurrency((session.amountShipping || 0) / 100) },
+    { label: 'Tax', value: formatCurrency((session.amountTax || 0) / 100) },
+    { label: 'Total', value: formatCurrency((session.amountTotal || 0) / 100), total: true },
+  ].filter(Boolean)
+
+  const detailRows = [
+    session.checkoutReference ? { label: 'Reference', value: session.checkoutReference } : null,
+    session.shippingMethod ? { label: 'Method', value: session.shippingMethod } : null,
+    session.shippingDetails?.name ? { label: 'Ship to', value: session.shippingDetails.name } : null,
+    formatAddress(session.shippingDetails)
+      ? { label: 'Address', value: formatAddress(session.shippingDetails) }
+      : null,
+  ].filter(Boolean)
+
+  return (
+    <section className="notes-section route-section checkout-page">
+      <div className="notes-copy">
+        <p className="eyebrow">confirmed</p>
+        <h2 className="checkout-confirmed-heading">payment received.</h2>
+        <div className="page-link-row checkout-page-actions">
+          <a
+            className="button button-primary"
+            href={trackOrderHref}
+            onClick={(event) => onNavigate(event, trackOrderHref)}
+          >
+            Track your order
+          </a>
+          <a
+            className="button button-secondary"
+            href="/tees"
+            onClick={(event) => onNavigate(event, '/tees')}
+          >
+            Continue shopping
+          </a>
+        </div>
+      </div>
+
+      <div className="newsletter-card checkout-status-card">
+        <p className="panel-label">receipt</p>
+        <div className="order-summary-breakdown">
+          {receiptRows.map((item) => (
+            <div
+              className={`order-summary-row${item.total ? ' order-summary-row-total' : ''}`}
+              key={item.label}
+            >
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+        </div>
+        {detailRows.length ? (
+          <div className="checkout-status-summary">
+            {detailRows.map((item) => (
+              <p key={item.label}>
+                <strong>{item.label}:</strong> {item.value}
+              </p>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
   const [sessionState, setSessionState] = useState({
     requestKey: '',
@@ -605,33 +685,7 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
       window.history.replaceState({}, '', '/checkout/return')
     }
 
-    return (
-      <CheckoutStatus
-        title="payment received."
-        message="The order is in. Stripe now has the shipping address, tax details, and the email destination for the paid receipt and invoice."
-        onNavigate={onNavigate}
-        eyebrow="confirmed"
-        summary={summary}
-        actions={
-          <>
-            <a
-              className="button button-primary"
-              href="/tees"
-              onClick={(event) => onNavigate(event, '/tees')}
-            >
-              Continue shopping
-            </a>
-            <a
-              className="button button-secondary"
-              href="/"
-              onClick={(event) => onNavigate(event, '/')}
-            >
-              Return to map
-            </a>
-          </>
-        }
-      />
-    )
+    return <PaidConfirmation session={session} onNavigate={onNavigate} />
   }
 
   if (session.orderStatus === 'payment_failed') {
@@ -743,6 +797,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
     error: '',
   })
   const [completion, setCompletion] = useState(null)
+  const [completionSession, setCompletionSession] = useState(null)
   const onCheckoutCompleteRef = useRef(onCheckoutComplete)
   const hasCompletedRef = useRef(false)
   const subtotal = cartSubtotal(cart)
@@ -890,6 +945,13 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
     }
 
     window.history.replaceState({}, '', '/checkout')
+
+    // The receipt needs the full session (subtotal/shipping/tax, checkout
+    // reference, etc.) which Stripe's confirm() result doesn't include --
+    // fetch it once so the same receipt view can be reused here.
+    getCheckoutSession(session.id)
+      .then((loadedSession) => setCompletionSession(loadedSession))
+      .catch(() => setCompletionSession(null))
   }
 
   if (mode === 'return') {
@@ -897,32 +959,18 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
   }
 
   if (completion) {
-    return (
-      <CheckoutStatus
-        title="payment received."
-        message="The order is in. Stripe has the final shipping, tax, and receipt details for this session."
-        onNavigate={onNavigate}
-        eyebrow="confirmed"
-        actions={
-          <>
-            <a
-              className="button button-primary"
-              href="/tees"
-              onClick={(event) => onNavigate(event, '/tees')}
-            >
-              Continue shopping
-            </a>
-            <a
-              className="button button-secondary"
-              href="/checkout/return"
-              onClick={(event) => onNavigate(event, '/checkout/return')}
-            >
-              View return page
-            </a>
-          </>
-        }
-      />
-    )
+    if (!completionSession) {
+      return (
+        <CheckoutStatus
+          title="payment received."
+          message="Loading your receipt…"
+          onNavigate={onNavigate}
+          eyebrow="confirmed"
+        />
+      )
+    }
+
+    return <PaidConfirmation session={completionSession} onNavigate={onNavigate} />
   }
 
   if (!cart.length && !resumeSessionId) {

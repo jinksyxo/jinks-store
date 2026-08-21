@@ -91,6 +91,24 @@ export async function getCheckoutSession(sessionId) {
   return payload
 }
 
+// Looks up an order's fulfillment status by its reference (checkout
+// reference or Stripe session id) plus the email it was placed under.
+// Returns { found: false } rather than throwing when nothing matches, so a
+// wrong reference/email pair reads as "not found" instead of an error.
+export async function trackOrder(reference, email) {
+  const payload = await parseJsonResponse(
+    await fetch('/api/orders/track', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reference, email }),
+    }),
+  )
+
+  return payload
+}
+
 export async function saveStoredProduct(product) {
   const payload = await parseJsonResponse(
     await fetch('/api/admin/products', {
