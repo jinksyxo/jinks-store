@@ -251,9 +251,16 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
     setIsSubmitting(true)
 
     try {
-      const result = await checkout.confirm({
-        redirect: 'if_required',
-      })
+      // When "billing is the same as shipping" is checked, the Billing
+      // Address Element never mounts, so Stripe has no billing address to
+      // confirm with unless we hand it the shipping address explicitly.
+      const confirmArgs = { redirect: 'if_required' }
+
+      if (isBillingSameAsShipping && addressValues.shipping) {
+        confirmArgs.billingAddress = addressValues.shipping
+      }
+
+      const result = await checkout.confirm(confirmArgs)
 
       if (result.type === 'error') {
         setSubmitError(result.error.message || 'Payment could not be completed.')
