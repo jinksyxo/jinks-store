@@ -250,23 +250,27 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
 
     setIsSubmitting(true)
 
-    const result = await checkout.confirm({
-      redirect: 'if_required',
-    })
+    try {
+      const result = await checkout.confirm({
+        redirect: 'if_required',
+      })
 
-    setIsSubmitting(false)
+      if (result.type === 'error') {
+        setSubmitError(result.error.message || 'Payment could not be completed.')
+        return
+      }
 
-    if (result.type === 'error') {
-      setSubmitError(result.error.message || 'Payment could not be completed.')
-      return
+      if (result.session.status.type === 'complete') {
+        onPaymentComplete(result.session)
+        return
+      }
+
+      setSubmitError('Additional payment steps are still in progress. Follow any prompts to finish.')
+    } catch {
+      setSubmitError('Payment could not be completed. Check your connection and try again.')
+    } finally {
+      setIsSubmitting(false)
     }
-
-    if (result.session.status.type === 'complete') {
-      onPaymentComplete(result.session)
-      return
-    }
-
-    setSubmitError('Additional payment steps are still in progress. Follow any prompts to finish.')
   }
 
   return (
@@ -919,7 +923,7 @@ export default function CheckoutPage({ cart, onNavigate, onCheckoutComplete, mod
       <div className="checkout-shell">
         {isPreparing ? (
           <div className="checkout-elements-loading">
-            <p>Preparing Stripe checkout…</p>
+            <p>Preparing Checkout...</p>
           </div>
         ) : null}
 

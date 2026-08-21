@@ -1727,7 +1727,6 @@ function CartPage({
     <section className="featured-section shop-section page-template cart-page">
       <div className="section-heading">
         <h2>review the order</h2>
-        <p>Adjust quantities here before moving into checkout.</p>
       </div>
 
       <div className="cart-layout">
