@@ -266,7 +266,8 @@ function CheckoutElementsForm({ onNavigate, onPaymentComplete, subtotal }) {
       }
 
       setSubmitError('Additional payment steps are still in progress. Follow any prompts to finish.')
-    } catch {
+    } catch (error) {
+      console.error('checkout.confirm failed', error)
       setSubmitError('Payment could not be completed. Check your connection and try again.')
     } finally {
       setIsSubmitting(false)
