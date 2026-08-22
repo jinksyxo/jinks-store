@@ -642,6 +642,7 @@
 .checkout-confirmed-heading {
   max-width: none;
   white-space: nowrap;
+  margin-bottom: 1.25rem;
 }
 
 .category-page-section .section-heading h2 {
