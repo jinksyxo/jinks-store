@@ -1,6 +1,13 @@
 import { createClient as createLibsqlClient } from '@libsql/client'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { promises as fsPromises } from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
@@ -3118,32 +3125,69 @@ async function removeProductFiles(product) {
   )
 }
 
-function serveStaticFile(response, filePath) {
+const STATIC_MIME_TYPES_BY_EXTENSION = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-icon',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
+}
+
+// `request` is optional so existing callers that don't have one handy still
+// work, but without it Range requests can't be honored -- always pass it
+// when serving anything a <video> or <audio> tag might load. iOS Safari in
+// particular refuses to play video that isn't served with proper 206
+// Partial Content responses to its Range probes.
+function serveStaticFile(response, filePath, request) {
   if (!existsSync(filePath)) {
     textResponse(response, 404, 'Not found.')
     return
   }
 
-  const extension = path.extname(filePath)
-  const contentType =
-    extension === '.html'
-      ? 'text/html; charset=utf-8'
-      : extension === '.css'
-        ? 'text/css; charset=utf-8'
-        : extension === '.js'
-          ? 'application/javascript; charset=utf-8'
-          : extension === '.svg'
-            ? 'image/svg+xml'
-            : extension === '.png'
-              ? 'image/png'
-              : extension === '.jpg' || extension === '.jpeg'
-                ? 'image/jpeg'
-                : extension === '.webp'
-                  ? 'image/webp'
-                  : 'application/octet-stream'
+  const extension = path.extname(filePath).toLowerCase()
+  const contentType = STATIC_MIME_TYPES_BY_EXTENSION[extension] || 'application/octet-stream'
+  const fileSize = statSync(filePath).size
+  const rangeHeader = request?.headers?.range
+  const rangeMatch = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader) : null
 
-  response.writeHead(200, { 'Content-Type': contentType })
-  response.end(readFileSync(filePath))
+  if (rangeMatch) {
+    const start = rangeMatch[1] ? Number(rangeMatch[1]) : 0
+    const end = rangeMatch[2] ? Number(rangeMatch[2]) : fileSize - 1
+
+    if (Number.isFinite(start) && Number.isFinite(end) && start <= end && end < fileSize) {
+      response.writeHead(206, {
+        'Content-Type': contentType,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+      })
+      createReadStream(filePath, { start, end }).pipe(response)
+      return
+    }
+
+    // Malformed or unsatisfiable range -- fall through and serve the whole
+    // file rather than erroring, so playback still works either way.
+  }
+
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': fileSize,
+    'Accept-Ranges': 'bytes',
+  })
+  createReadStream(filePath).pipe(response)
 }
 
 const server = http.createServer(async (request, response) => {
@@ -4058,7 +4102,7 @@ const server = http.createServer(async (request, response) => {
         return
       }
 
-      serveStaticFile(response, resolvedTarget)
+      serveStaticFile(response, resolvedTarget, request)
       return
     }
 
@@ -4069,7 +4113,7 @@ const server = http.createServer(async (request, response) => {
       const candidatePath = path.join(distDir, requestedPath)
 
       if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
-        serveStaticFile(response, candidatePath)
+        serveStaticFile(response, candidatePath, request)
         return
       }
 
