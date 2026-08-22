@@ -3413,6 +3413,9 @@ const server = http.createServer(async (request, response) => {
         clientSecret: session.status === 'open' ? session.client_secret || null : null,
         publishableKey: session.status === 'open' ? STRIPE_PUBLISHABLE_KEY : null,
         orderStatus: matchedOrder?.status || null,
+        fulfillmentStatus: matchedOrder?.fulfillmentStatus || null,
+        shippingCarrier: matchedOrder?.shippingCarrier || '',
+        trackingNumber: matchedOrder?.trackingNumber || '',
       })
       return
     }

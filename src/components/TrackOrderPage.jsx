@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { trackOrder } from '../lib/devPortalStore'
+import { buildCarrierTrackingUrl, FULFILLMENT_STATUS_LABELS } from '../lib/orderTracking'
 
 function formatCurrency(value) {
   return new Intl.NumberFormat('en-US', {
@@ -36,42 +37,6 @@ function formatAddress(shippingDetails) {
   return [address.line1, address.line2, address.city, address.state, address.postalCode, address.country]
     .filter(Boolean)
     .join(', ')
-}
-
-const FULFILLMENT_STATUS_LABELS = {
-  unfulfilled: 'Order received',
-  preparing: 'Preparing',
-  packed: 'Packed',
-  shipped: 'Shipped',
-  delivered: 'Delivered',
-  cancelled: 'Cancelled',
-}
-
-function buildCarrierTrackingUrl(carrier, trackingNumber) {
-  if (!trackingNumber) {
-    return null
-  }
-
-  const normalizedCarrier = String(carrier || '').trim().toLowerCase()
-  const encodedNumber = encodeURIComponent(trackingNumber)
-
-  if (normalizedCarrier.includes('usps')) {
-    return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodedNumber}`
-  }
-
-  if (normalizedCarrier.includes('ups')) {
-    return `https://www.ups.com/track?loc=en_US&tracknum=${encodedNumber}`
-  }
-
-  if (normalizedCarrier.includes('fedex')) {
-    return `https://www.fedex.com/fedextrack/?trknbr=${encodedNumber}`
-  }
-
-  if (normalizedCarrier.includes('dhl')) {
-    return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodedNumber}`
-  }
-
-  return null
 }
 
 export default function TrackOrderPage({ onNavigate }) {

@@ -1629,6 +1629,12 @@
   gap: 0.65rem;
 }
 
+.checkout-confirmation-panels {
+  display: grid;
+  gap: 1.25rem;
+  align-content: start;
+}
+
 .product-meta h3,
 .story-list h3,
 .newsletter-card h3 {

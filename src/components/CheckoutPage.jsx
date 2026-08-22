@@ -9,6 +9,7 @@ import {
   useCheckoutElements,
 } from '@stripe/react-stripe-js/checkout'
 import { createCheckoutSession, getCheckoutSession } from '../lib/devPortalStore'
+import { buildCarrierTrackingUrl, FULFILLMENT_STATUS_LABELS } from '../lib/orderTracking'
 import { estimateStandardShippingCents } from '../lib/orderSummary'
 
 function buildCheckoutItems(cart) {
@@ -483,6 +484,8 @@ function PaidConfirmation({ session, onNavigate }) {
       : null,
   ].filter(Boolean)
 
+  const trackingUrl = buildCarrierTrackingUrl(session.shippingCarrier, session.trackingNumber)
+
   return (
     <section className="notes-section route-section checkout-page">
       <div className="notes-copy">
@@ -506,28 +509,61 @@ function PaidConfirmation({ session, onNavigate }) {
         </div>
       </div>
 
-      <div className="newsletter-card checkout-status-card">
-        <p className="panel-label">receipt</p>
-        <div className="order-summary-breakdown">
-          {receiptRows.map((item) => (
-            <div
-              className={`order-summary-row${item.total ? ' order-summary-row-total' : ''}`}
-              key={item.label}
-            >
-              <span>{item.label}</span>
-              <strong>{item.value}</strong>
+      <div className="checkout-confirmation-panels">
+        <div className="newsletter-card checkout-status-card">
+          <p className="panel-label">shipping status</p>
+          <h3>{FULFILLMENT_STATUS_LABELS[session.fulfillmentStatus] || 'Order received'}</h3>
+          {session.shippingCarrier || session.trackingNumber ? (
+            <div className="order-summary-breakdown">
+              {session.shippingCarrier ? (
+                <div className="order-summary-row">
+                  <span>Carrier</span>
+                  <strong>{session.shippingCarrier}</strong>
+                </div>
+              ) : null}
+              {session.trackingNumber ? (
+                <div className="order-summary-row">
+                  <span>Tracking number</span>
+                  <strong>
+                    {trackingUrl ? (
+                      <a href={trackingUrl} target="_blank" rel="noreferrer">
+                        {session.trackingNumber}
+                      </a>
+                    ) : (
+                      session.trackingNumber
+                    )}
+                  </strong>
+                </div>
+              ) : null}
             </div>
-          ))}
+          ) : (
+            <p>We&apos;ll email you tracking details as soon as this ships.</p>
+          )}
         </div>
-        {detailRows.length ? (
-          <div className="checkout-status-summary">
-            {detailRows.map((item) => (
-              <p key={item.label}>
-                <strong>{item.label}:</strong> {item.value}
-              </p>
+
+        <div className="newsletter-card checkout-status-card">
+          <p className="panel-label">receipt</p>
+          <div className="order-summary-breakdown">
+            {receiptRows.map((item) => (
+              <div
+                className={`order-summary-row${item.total ? ' order-summary-row-total' : ''}`}
+                key={item.label}
+              >
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
             ))}
           </div>
-        ) : null}
+          {detailRows.length ? (
+            <div className="checkout-status-summary">
+              {detailRows.map((item) => (
+                <p key={item.label}>
+                  <strong>{item.label}:</strong> {item.value}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     </section>
   )
