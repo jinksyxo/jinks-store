@@ -577,10 +577,16 @@ function CheckoutReturnPage({ onNavigate, onCheckoutComplete }) {
   })
   const onCheckoutCompleteRef = useRef(onCheckoutComplete)
   const hasCompletedRef = useRef(false)
-  const sessionId =
+  // Captured once on mount, not recomputed every render -- the isPaid branch
+  // below strips session_id from the URL via replaceState, and a parent
+  // re-render (e.g. from onCheckoutComplete's setState) after that would
+  // otherwise make this "disappear" mid-page-life and fall into the
+  // session-not-found error state on a page that just successfully loaded.
+  const [sessionId] = useState(() =>
     typeof window === 'undefined'
       ? ''
-      : new URLSearchParams(window.location.search).get('session_id') || ''
+      : new URLSearchParams(window.location.search).get('session_id') || '',
+  )
   const requestKey = sessionId || '__missing__'
   const resolvedState = sessionState.requestKey === requestKey ? sessionState : null
   const session = resolvedState?.session || null
