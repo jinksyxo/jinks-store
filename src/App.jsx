@@ -979,7 +979,7 @@ function buildCollectionItems(customProducts, collectionKey, fallbackItems) {
     return fallbackItems
   }
 
-  return collectionProducts.slice(0, 3).map((product, index) => ({
+  return collectionProducts.map((product, index) => ({
     eyebrow: `featured item ${String(index + 1).padStart(2, '0')}`,
     title: product.name,
     href: product.slug ? `/products/${product.slug}` : null,
@@ -1062,6 +1062,22 @@ const SHOW_UTAH_LOCAL_COLLECTION = false
 function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
   const tickerTrackRef = useRef(null)
   const tickerGroupRef = useRef(null)
+  const featuredRailRef = useRef(null)
+
+  const scrollFeaturedRail = (direction) => {
+    const rail = featuredRailRef.current
+
+    if (!rail) {
+      return
+    }
+
+    // Scroll roughly one card's width (plus its gap) at a time so a click
+    // always lands on the next card instead of a partial/awkward amount.
+    const card = rail.querySelector('.featured-card, .featured-card-link')
+    const step = card ? card.getBoundingClientRect().width + 16 : rail.clientWidth * 0.8
+
+    rail.scrollBy({ left: direction * step, behavior: 'smooth' })
+  }
 
   useEffect(() => {
     if (!tickerTrackRef.current || !tickerGroupRef.current) {
@@ -1176,7 +1192,17 @@ function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
         </div>
 
         <div className="featured-carousel-stage">
-          <div className="featured-rail">
+          {featuredItems.length > 1 ? (
+            <button
+              type="button"
+              className="featured-rail-nav featured-rail-nav-prev"
+              onClick={() => scrollFeaturedRail(-1)}
+              aria-label="Scroll featured collection left"
+            >
+              &lt;
+            </button>
+          ) : null}
+          <div className="featured-rail" ref={featuredRailRef}>
             {featuredItems.map((item) => (
               item.href ? (
                 <a
@@ -1218,6 +1244,16 @@ function FeaturedCarousel({ featuredItems, utahItems, onNavigate }) {
               )
             ))}
           </div>
+          {featuredItems.length > 1 ? (
+            <button
+              type="button"
+              className="featured-rail-nav featured-rail-nav-next"
+              onClick={() => scrollFeaturedRail(1)}
+              aria-label="Scroll featured collection right"
+            >
+              &gt;
+            </button>
+          ) : null}
         </div>
       </div>
     </section>

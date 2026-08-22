@@ -241,9 +241,49 @@
 }
 
 .featured-carousel-stage {
+  position: relative;
   min-height: 27vh;
   padding: 1.25rem 1.5rem 1.5rem;
   overflow: hidden;
+}
+
+.featured-rail-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 2.4rem;
+  height: 2.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-h);
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.featured-rail-nav:hover,
+.featured-rail-nav:focus-visible {
+  color: var(--blue);
+  border-color: var(--blue);
+  outline: 0;
+  transform: translateY(-50%) scale(1.06);
+}
+
+.featured-rail-nav-prev {
+  left: 0.5rem;
+}
+
+.featured-rail-nav-next {
+  right: 0.5rem;
 }
 
 .liquid-carousel-shell {
