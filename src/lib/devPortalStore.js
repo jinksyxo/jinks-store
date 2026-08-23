@@ -258,6 +258,21 @@ export async function generateShippingSpreadsheet() {
   return payload.result
 }
 
+// One-off maintenance pass: resizes/compresses every already-uploaded
+// product image to WebP, the same way new uploads are handled
+// automatically. Safe to run more than once -- images already converted
+// are skipped.
+export async function reprocessProductImages() {
+  const payload = await parseJsonResponse(
+    await fetch('/api/admin/products/reprocess-images', {
+      method: 'POST',
+      credentials: 'include',
+    }),
+  )
+
+  return payload.result
+}
+
 export async function updateSharedShirtInventory(inventory) {
   const payload = await parseJsonResponse(
     await fetch('/api/admin/shirt-inventory', {

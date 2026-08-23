@@ -11,6 +11,7 @@ import {
   getDevPortalSession,
   loginToDevPortal,
   logoutFromDevPortal,
+  reprocessProductImages,
   updateCustomer,
   updateStripeOrder,
   updateSharedShirtInventory,
@@ -1014,6 +1015,9 @@ function DevPage({
   const [shippingSpreadsheetError, setShippingSpreadsheetError] = useState('')
   const [shippingSpreadsheetMessage, setShippingSpreadsheetMessage] = useState('')
   const [isGeneratingShippingSpreadsheet, setIsGeneratingShippingSpreadsheet] = useState(false)
+  const [isReprocessingImages, setIsReprocessingImages] = useState(false)
+  const [reprocessImagesError, setReprocessImagesError] = useState('')
+  const [reprocessImagesMessage, setReprocessImagesMessage] = useState('')
 
   const newImagePreviews = useMemo(
     () =>
@@ -1732,6 +1736,33 @@ function DevPage({
     }
   }
 
+  const handleReprocessImages = async () => {
+    setIsReprocessingImages(true)
+    setReprocessImagesError('')
+    setReprocessImagesMessage('')
+
+    try {
+      const result = await reprocessProductImages()
+
+      if (!result.imagesReprocessed) {
+        setReprocessImagesMessage('Nothing to do -- every product image is already optimized.')
+      } else {
+        const savedBytes = result.bytesBefore - result.bytesAfter
+        const savedPercent = result.bytesBefore
+          ? Math.round((savedBytes / result.bytesBefore) * 100)
+          : 0
+        setReprocessImagesMessage(
+          `Reprocessed ${result.imagesReprocessed} image${result.imagesReprocessed === 1 ? '' : 's'} across ${result.productsChanged} product${result.productsChanged === 1 ? '' : 's'} -- saved ${formatBytes(savedBytes)} (${savedPercent}% smaller).${result.imagesFailed ? ` ${result.imagesFailed} image${result.imagesFailed === 1 ? '' : 's'} failed and were left as-is.` : ''}`,
+        )
+      }
+
+    } catch (error) {
+      setReprocessImagesError(error.message || 'Product images could not be reprocessed.')
+    } finally {
+      setIsReprocessingImages(false)
+    }
+  }
+
   const handleExportCustomers = async () => {
     setIsExportingCustomers(true)
     setCustomersError('')
@@ -1959,6 +1990,37 @@ function DevPage({
               </div>
             )}
           </div>
+        </div>
+      ) : null}
+
+      {isBackupsPage ? (
+        <div className="newsletter-card dev-backups-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">product images</p>
+            <h3>Reprocess uploaded images</h3>
+            <p>
+              New uploads are automatically resized and converted to WebP. This re-runs the same
+              optimization against every already-uploaded product image (skips any already
+              converted) -- safe to run as many times as you want. Refresh the products page
+              afterward to see the smaller files reflected.
+            </p>
+          </div>
+
+          <div className="dev-backup-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={handleReprocessImages}
+              disabled={isReprocessingImages}
+            >
+              {isReprocessingImages ? 'Reprocessing...' : 'Reprocess all product images'}
+            </button>
+          </div>
+
+          {reprocessImagesError ? <p className="dev-form-error">{reprocessImagesError}</p> : null}
+          {reprocessImagesMessage ? (
+            <p className="dev-form-success">{reprocessImagesMessage}</p>
+          ) : null}
         </div>
       ) : null}
 

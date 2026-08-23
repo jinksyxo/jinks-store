@@ -132,6 +132,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || ''
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev'
 const SHIPPING_SPREADSHEET_ALERT_EMAIL =
   process.env.SHIPPING_SPREADSHEET_ALERT_EMAIL || 'jinks@matsumotoshop.com'
+const ADMIN_ALERT_EMAIL = process.env.ADMIN_ALERT_EMAIL || SHIPPING_SPREADSHEET_ALERT_EMAIL
 // Utah store hours. Override with SHIPPING_SPREADSHEET_TIMEZONE if that ever changes.
 const SHIPPING_SPREADSHEET_TIMEZONE =
   process.env.SHIPPING_SPREADSHEET_TIMEZONE || 'America/Denver'
@@ -1812,27 +1813,58 @@ async function listShippingSpreadsheets() {
   )
 }
 
-async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt }) {
+// Shared by every transactional email this server sends (shipping
+// spreadsheet alerts, shipped-order notices, error alerts) so the Resend
+// call, auth header, and error handling only live in one place.
+// Throttle so a crash loop or a repeatedly-hit broken route can't flood the
+// inbox -- at most one alert email per cooldown window, regardless of how
+// many errors fire in that window. Every error still goes to the console
+// (Railway logs) no matter what; this only throttles the email side.
+const ERROR_ALERT_COOLDOWN_MS = 5 * 60 * 1000
+let lastErrorAlertSentAt = 0
+
+async function sendErrorAlertEmail(error, context = {}) {
+  const now = Date.now()
+
+  if (now - lastErrorAlertSentAt < ERROR_ALERT_COOLDOWN_MS) {
+    return { sent: false, error: 'Throttled (another alert was sent recently).' }
+  }
+
+  lastErrorAlertSentAt = now
+
+  const message = error instanceof Error ? error.message : String(error)
+  const stack = error instanceof Error && error.stack ? error.stack : ''
+  const contextLines = Object.entries(context)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}: ${value}`)
+  const timestamp = new Date().toISOString()
+  const subject = `matsumoto* server error: ${message}`.slice(0, 140)
+  const text = [
+    `An unexpected error occurred at ${timestamp}.`,
+    contextLines.length ? contextLines.join('\n') : null,
+    message,
+    stack,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const html = [
+    `<p>An unexpected error occurred at ${timestamp}.</p>`,
+    contextLines.length
+      ? `<p>${contextLines.map((line) => line.replace(/</g, '&lt;')).join('<br>')}</p>`
+      : '',
+    `<p><strong>${message.replace(/</g, '&lt;')}</strong></p>`,
+    stack ? `<pre>${stack.replace(/</g, '&lt;').slice(0, 4000)}</pre>` : '',
+  ]
+    .filter(Boolean)
+    .join('')
+
+  return sendResendEmail({ to: ADMIN_ALERT_EMAIL, subject, text, html })
+}
+
+async function sendResendEmail({ to, subject, text, html }) {
   if (!RESEND_API_KEY) {
     return { sent: false, error: 'RESEND_API_KEY is not configured.' }
   }
-
-  const dashboardUrl = `${APP_URL.replace(/\/$/, '')}/dev/shipping`
-  const orderNoun = orderCount === 1 ? 'order' : 'orders'
-  const generatedAtLabel = new Date(generatedAt).toLocaleString('en-US', {
-    timeZone: SHIPPING_SPREADSHEET_TIMEZONE,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-  const subject = fileName
-    ? `New shipping spreadsheet ready — ${orderCount} ${orderNoun}`
-    : 'Shipping spreadsheet check — no new orders'
-  const text = fileName
-    ? `A new shipping spreadsheet (${fileName}) with ${orderCount} ${orderNoun} was generated at ${generatedAtLabel}.\n\nDownload it from the dev site: ${dashboardUrl}`
-    : `Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.\n\nDev site: ${dashboardUrl}`
-  const html = fileName
-    ? `<p>A new shipping spreadsheet was generated at ${generatedAtLabel}.</p><p><strong>${orderCount}</strong> ${orderNoun} — <code>${fileName}</code></p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
-    : `<p>Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.</p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
 
   try {
     const response = await fetch('https://api.resend.com/emails', {
@@ -1843,7 +1875,7 @@ async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt 
       },
       body: JSON.stringify({
         from: RESEND_FROM_EMAIL,
-        to: [SHIPPING_SPREADSHEET_ALERT_EMAIL],
+        to: Array.isArray(to) ? to : [to],
         subject,
         text,
         html,
@@ -1862,6 +1894,27 @@ async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt 
   } catch (error) {
     return { sent: false, error: error.message || 'Email request failed.' }
   }
+}
+
+async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt }) {
+  const dashboardUrl = `${APP_URL.replace(/\/$/, '')}/dev/shipping`
+  const orderNoun = orderCount === 1 ? 'order' : 'orders'
+  const generatedAtLabel = new Date(generatedAt).toLocaleString('en-US', {
+    timeZone: SHIPPING_SPREADSHEET_TIMEZONE,
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+  const subject = fileName
+    ? `New shipping spreadsheet ready — ${orderCount} ${orderNoun}`
+    : 'Shipping spreadsheet check — no new orders'
+  const text = fileName
+    ? `A new shipping spreadsheet (${fileName}) with ${orderCount} ${orderNoun} was generated at ${generatedAtLabel}.\n\nDownload it from the dev site: ${dashboardUrl}`
+    : `Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.\n\nDev site: ${dashboardUrl}`
+  const html = fileName
+    ? `<p>A new shipping spreadsheet was generated at ${generatedAtLabel}.</p><p><strong>${orderCount}</strong> ${orderNoun} — <code>${fileName}</code></p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
+    : `<p>Checked for new orders at ${generatedAtLabel} — there weren't any since the last spreadsheet. Nothing to ship this cycle.</p><p><a href="${dashboardUrl}">Open the shipping spreadsheets tab</a></p>`
+
+  return sendResendEmail({ to: SHIPPING_SPREADSHEET_ALERT_EMAIL, subject, text, html })
 }
 
 // Builds a direct link to a carrier's own tracking page. Returns null for
@@ -1895,10 +1948,6 @@ function buildCarrierTrackingUrl(carrier, trackingNumber) {
 }
 
 async function sendOrderShippedEmail(order) {
-  if (!RESEND_API_KEY) {
-    return { sent: false, error: 'RESEND_API_KEY is not configured.' }
-  }
-
   if (!order.customerEmail) {
     return { sent: false, error: 'Order has no customer email on file.' }
   }
@@ -1931,34 +1980,7 @@ async function sendOrderShippedEmail(order) {
     .filter(Boolean)
     .join('')
 
-  try {
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: RESEND_FROM_EMAIL,
-        to: [order.customerEmail],
-        subject,
-        text,
-        html,
-      }),
-    })
-
-    if (!response.ok) {
-      const errorBody = await response.text()
-      return {
-        sent: false,
-        error: `Resend responded with ${response.status}: ${errorBody.slice(0, 300)}`,
-      }
-    }
-
-    return { sent: true, error: null }
-  } catch (error) {
-    return { sent: false, error: error.message || 'Email request failed.' }
-  }
+  return sendResendEmail({ to: order.customerEmail, subject, text, html })
 }
 
 async function generateShippingSpreadsheet({ trigger = 'manual' } = {}) {
@@ -3061,6 +3083,103 @@ async function persistImages(productId, images) {
   return normalizePrimaryImages(savedImages)
 }
 
+// One-off maintenance pass over every already-uploaded product image --
+// resizes/compresses to WebP the same way new uploads do automatically.
+// Images that are already .webp are left alone (either already ran through
+// this, or through this same pipeline on upload). Runs product-by-product
+// so a failure partway through still leaves everything processed so far
+// persisted, rather than losing all progress.
+async function reprocessExistingProductImages() {
+  const products = await readProducts()
+  let imagesReprocessed = 0
+  let imagesSkipped = 0
+  let imagesFailed = 0
+  let bytesBefore = 0
+  let bytesAfter = 0
+  let productsChanged = 0
+
+  for (const product of products) {
+    if (!Array.isArray(product.images) || !product.images.length) {
+      continue
+    }
+
+    let productChanged = false
+    const nextImages = []
+
+    for (const image of product.images) {
+      const currentFileName = image.fileName || path.basename(image.url || '')
+      const currentExtension = path.extname(currentFileName).toLowerCase()
+
+      if (!currentFileName || currentExtension === '.webp') {
+        imagesSkipped += 1
+        nextImages.push(image)
+        continue
+      }
+
+      const currentFilePath = path.join(uploadsDir, currentFileName)
+
+      if (!existsSync(currentFilePath)) {
+        imagesSkipped += 1
+        nextImages.push(image)
+        continue
+      }
+
+      try {
+        const rawBuffer = await fsPromises.readFile(currentFilePath)
+        const optimized = await optimizeUploadedImage(rawBuffer, currentExtension)
+
+        if (optimized.extension === currentExtension) {
+          // Optimization silently fell back to the original format --
+          // nothing usefully changed, leave the file as-is.
+          imagesSkipped += 1
+          nextImages.push(image)
+          continue
+        }
+
+        const newFileName = currentFileName.replace(/\.[^.]+$/, optimized.extension)
+        const newFilePath = path.join(uploadsDir, newFileName)
+
+        await fsPromises.writeFile(newFilePath, optimized.buffer)
+        await fsPromises.unlink(currentFilePath)
+
+        bytesBefore += rawBuffer.length
+        bytesAfter += optimized.buffer.length
+        imagesReprocessed += 1
+        productChanged = true
+
+        nextImages.push({
+          ...image,
+          type: optimized.type || image.type,
+          url: `/uploads/${newFileName}`,
+          fileName: newFileName,
+        })
+      } catch (error) {
+        console.error(`[reprocess-images] failed for ${currentFileName}:`, error.message)
+        imagesFailed += 1
+        nextImages.push(image)
+      }
+    }
+
+    if (productChanged) {
+      product.images = normalizePrimaryImages(nextImages)
+      productsChanged += 1
+    }
+  }
+
+  if (productsChanged) {
+    await writeProducts(products)
+  }
+
+  return {
+    productsChanged,
+    imagesReprocessed,
+    imagesSkipped,
+    imagesFailed,
+    bytesBefore,
+    bytesAfter,
+  }
+}
+
 function buildStoredProduct(payload, savedImages) {
   return {
     id: randomBytes(12).toString('hex'),
@@ -4124,6 +4243,16 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    if (request.method === 'POST' && pathname === '/api/admin/products/reprocess-images') {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const result = await reprocessExistingProductImages()
+      jsonResponse(response, 200, { result })
+      return
+    }
+
     if (request.method === 'GET' && pathname.startsWith('/uploads/')) {
       const targetPath = path.join(uploadsDir, pathname.replace('/uploads/', ''))
       const resolvedTarget = path.resolve(targetPath)
@@ -4154,10 +4283,35 @@ const server = http.createServer(async (request, response) => {
 
     textResponse(response, 404, 'Not found.')
   } catch (error) {
+    console.error('[request-error]', request.method, pathname, error)
+    // Fire-and-forget -- don't hold up the error response on an email send,
+    // and don't let a Resend hiccup turn into an unhandled rejection.
+    sendErrorAlertEmail(error, { route: `${request.method} ${pathname}` }).catch(() => {})
+
     jsonResponse(response, 500, {
       error: error instanceof Error ? error.message : 'Server error.',
     })
   }
+})
+
+// Errors that escape every try/catch (a bad async callback, a broken
+// timer/interval, etc.) would otherwise crash the process with nothing but
+// whatever Railway happens to capture in its own logs. Alert on these too,
+// and exit deliberately after an uncaughtException -- process state may be
+// corrupted at that point, so let Railway restart cleanly rather than limp
+// along.
+process.on('uncaughtException', (error) => {
+  console.error('[uncaught-exception]', error)
+  sendErrorAlertEmail(error, { source: 'uncaughtException' })
+    .catch(() => {})
+    .finally(() => {
+      process.exit(1)
+    })
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandled-rejection]', reason)
+  sendErrorAlertEmail(reason, { source: 'unhandledRejection' }).catch(() => {})
 })
 
 server.listen(PORT, () => {
