@@ -1384,6 +1384,16 @@
   box-sizing: border-box;
 }
 
+.track-order-layout-centered {
+  display: flex;
+  justify-content: center;
+}
+
+.track-order-lookup-card {
+  width: 100%;
+  max-width: 30rem;
+}
+
 .track-order-form {
   max-width: 26rem;
 }

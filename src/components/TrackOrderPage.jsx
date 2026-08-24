@@ -95,8 +95,8 @@ export default function TrackOrderPage({ onNavigate }) {
         <p>Enter the order reference from your receipt and the email you checked out with.</p>
       </div>
 
-      <div className="cart-layout">
-        <form className="newsletter-card" onSubmit={handleSubmit}>
+      <div className={result ? 'cart-layout' : 'track-order-layout-centered'}>
+        <form className="newsletter-card track-order-lookup-card" onSubmit={handleSubmit}>
           <p className="panel-label">order lookup</p>
           <div className="product-form track-order-form">
             <label className="track-order-field">
