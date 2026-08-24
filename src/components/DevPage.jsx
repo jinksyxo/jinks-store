@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  checkTaxCalculation,
   createStoreBackup,
   downloadAdminFile,
   generateShippingSpreadsheet,
@@ -1018,6 +1019,15 @@ function DevPage({
   const [isReprocessingImages, setIsReprocessingImages] = useState(false)
   const [reprocessImagesError, setReprocessImagesError] = useState('')
   const [reprocessImagesMessage, setReprocessImagesMessage] = useState('')
+  const [taxCheckAddress, setTaxCheckAddress] = useState({
+    line1: '1233 Trimble Ln',
+    city: 'West Jordan',
+    state: 'UT',
+    postalCode: '84088',
+  })
+  const [isCheckingTax, setIsCheckingTax] = useState(false)
+  const [taxCheckError, setTaxCheckError] = useState('')
+  const [taxCheckResult, setTaxCheckResult] = useState(null)
 
   const newImagePreviews = useMemo(
     () =>
@@ -1763,6 +1773,21 @@ function DevPage({
     }
   }
 
+  const handleCheckTax = async () => {
+    setIsCheckingTax(true)
+    setTaxCheckError('')
+    setTaxCheckResult(null)
+
+    try {
+      const result = await checkTaxCalculation({ ...taxCheckAddress, country: 'US', amount: 2500 })
+      setTaxCheckResult(result)
+    } catch (error) {
+      setTaxCheckError(error.message || 'Tax calculation failed.')
+    } finally {
+      setIsCheckingTax(false)
+    }
+  }
+
   const handleExportCustomers = async () => {
     setIsExportingCustomers(true)
     setCustomersError('')
@@ -2020,6 +2045,93 @@ function DevPage({
           {reprocessImagesError ? <p className="dev-form-error">{reprocessImagesError}</p> : null}
           {reprocessImagesMessage ? (
             <p className="dev-form-success">{reprocessImagesMessage}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {isBackupsPage ? (
+        <div className="newsletter-card dev-backups-hero">
+          <div className="dev-inventory-copy">
+            <p className="panel-label">tax registration check</p>
+            <h3>Confirm a Stripe Tax registration is live</h3>
+            <p>
+              Runs a real Stripe Tax calculation against an address (a $25 test line item, nothing
+              is charged) to confirm whether a registration is actually applying tax there yet.
+              Stripe charges a tiny calculation fee only when a registration covers the address.
+            </p>
+          </div>
+
+          <div className="dev-form-grid">
+            <label className="dev-field">
+              <span>Address line 1</span>
+              <input
+                type="text"
+                value={taxCheckAddress.line1}
+                onChange={(event) =>
+                  setTaxCheckAddress((current) => ({ ...current, line1: event.target.value }))
+                }
+              />
+            </label>
+            <label className="dev-field">
+              <span>City</span>
+              <input
+                type="text"
+                value={taxCheckAddress.city}
+                onChange={(event) =>
+                  setTaxCheckAddress((current) => ({ ...current, city: event.target.value }))
+                }
+              />
+            </label>
+            <label className="dev-field">
+              <span>State</span>
+              <input
+                type="text"
+                value={taxCheckAddress.state}
+                onChange={(event) =>
+                  setTaxCheckAddress((current) => ({ ...current, state: event.target.value }))
+                }
+              />
+            </label>
+            <label className="dev-field">
+              <span>Postal code</span>
+              <input
+                type="text"
+                value={taxCheckAddress.postalCode}
+                onChange={(event) =>
+                  setTaxCheckAddress((current) => ({ ...current, postalCode: event.target.value }))
+                }
+              />
+            </label>
+          </div>
+
+          <div className="dev-backup-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={handleCheckTax}
+              disabled={isCheckingTax}
+            >
+              {isCheckingTax ? 'Checking...' : 'Check tax calculation'}
+            </button>
+          </div>
+
+          {taxCheckError ? <p className="dev-form-error">{taxCheckError}</p> : null}
+          {taxCheckResult ? (
+            taxCheckResult.taxAmount > 0 ? (
+              <p className="dev-form-success">
+                Registration is active: {formatCurrency(taxCheckResult.taxAmount / 100)} tax on a{' '}
+                {formatCurrency(taxCheckResult.amount / 100)} item (
+                {taxCheckResult.breakdown
+                  ?.map((line) => `${line.tax_rate_details?.percentage_decimal}% ${line.tax_rate_details?.tax_type}`)
+                  .join(', ')}
+                ).
+              </p>
+            ) : (
+              <p className="dev-form-error">
+                $0.00 tax calculated for that address -- no active registration covers it yet (or
+                the registration hasn't taken effect).
+              </p>
+            )
           ) : null}
         </div>
       ) : null}

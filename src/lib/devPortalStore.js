@@ -273,6 +273,25 @@ export async function reprocessProductImages() {
   return payload.result
 }
 
+// Diagnostic only: confirms whether a Stripe Tax registration is active for
+// a given address by running a real (tiny-fee) tax calculation, without
+// needing a full checkout. Throws with Stripe's own error message (e.g. an
+// invalid address) via parseJsonResponse if the calculation itself fails.
+export async function checkTaxCalculation({ line1, city, state, postalCode, country, amount }) {
+  const payload = await parseJsonResponse(
+    await fetch('/api/admin/tax/check', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ line1, city, state, postalCode, country, amount }),
+    }),
+  )
+
+  return payload
+}
+
 export async function updateSharedShirtInventory(inventory) {
   const payload = await parseJsonResponse(
     await fetch('/api/admin/shirt-inventory', {

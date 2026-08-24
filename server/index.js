@@ -4253,6 +4253,69 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    // One-off diagnostic: confirms a real Stripe Tax registration is active
+    // and actually calculating tax for a given address, without needing a
+    // full checkout. Uses the real Tax Calculations API, so -- like a real
+    // order -- it only incurs Stripe's (tiny) tax calculation fee when a
+    // registration actually covers the address; calling it repeatedly for
+    // the same reason is why this stays admin-gated rather than public.
+    if (request.method === 'POST' && pathname === '/api/admin/tax/check') {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      if (!stripeClient) {
+        jsonResponse(response, 503, { error: 'Stripe secret key is not configured.' })
+        return
+      }
+
+      const body = await readJsonBody(request)
+      const address = {
+        line1: String(body.line1 || '').trim(),
+        city: String(body.city || '').trim(),
+        state: String(body.state || '').trim(),
+        postal_code: String(body.postalCode || '').trim(),
+        country: String(body.country || 'US').trim(),
+      }
+      const amount = Math.max(1, Math.round(Number(body.amount) || 2500))
+
+      if (!address.line1 || !address.city || !address.state || !address.postal_code) {
+        jsonResponse(response, 400, { error: 'A full address (line1, city, state, postal code) is required.' })
+        return
+      }
+
+      try {
+        const calculation = await stripeClient.tax.calculations.create({
+          currency: 'usd',
+          customer_details: {
+            address,
+            address_source: 'shipping',
+          },
+          line_items: [
+            {
+              amount,
+              reference: 'tax-check-test-item',
+              ...(STRIPE_DEFAULT_TAX_CODE ? { tax_code: STRIPE_DEFAULT_TAX_CODE } : {}),
+            },
+          ],
+        })
+
+        jsonResponse(response, 200, {
+          address,
+          amount,
+          taxAmount: calculation.tax_amount_exclusive,
+          totalWithTax: calculation.amount_total,
+          breakdown: calculation.tax_breakdown,
+        })
+      } catch (error) {
+        jsonResponse(response, 400, {
+          error: error instanceof Error ? error.message : 'Tax calculation failed.',
+        })
+      }
+
+      return
+    }
+
     if (request.method === 'GET' && pathname.startsWith('/uploads/')) {
       const targetPath = path.join(uploadsDir, pathname.replace('/uploads/', ''))
       const resolvedTarget = path.resolve(targetPath)
