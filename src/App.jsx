@@ -2002,23 +2002,23 @@ function FaqPage() {
       <div className="about-card">
         <h2>frequently asked questions</h2>
 
-        <h3>When do orders go out?</h3>
+        <h3>when do orders go out?</h3>
         <p>
-          Shirts are made-to-order, and will be shipped within a week of
-          purchase, on a Monday, Wednesday, or Friday.
+          shirts are made-to-order, and will be shipped within a week of
+          purchase, on a monday, wednesday, or friday.
         </p>
 
-        <h3>What is the refund process like?</h3>
+        <h3>what is the refund process like?</h3>
         <p>
-          If you are unhappy with your purchase, please email{' '}
+          if you are unhappy with your purchase, please email{' '}
           <a href="mailto:jinks@matsumotoshop.com">jinks@matsumotoshop.com</a>
-          , and explain why. Depending on the situation, store credit may be
+          , and explain why. depending on the situation, store credit may be
           administered.
         </p>
 
-        <h3>How do I know what size to order?</h3>
+        <h3>how do i know what size to order?</h3>
         <p>
-          Specific measurements and widths can be found in the table found on
+          specific measurements and widths can be found in the table found on
           each product page.
         </p>
       </div>
