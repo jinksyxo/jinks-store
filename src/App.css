@@ -1039,6 +1039,13 @@
   grid-template-columns: minmax(0, 1.35fr) minmax(7rem, 0.36fr);
 }
 
+/* No thumbnail rail to show for a single-image product -- without this the
+   grid still reserves its minimum 7rem for that column even though nothing
+   renders there, leaving a dead gap beside the photo. */
+.product-gallery-card-single-image {
+  grid-template-columns: 1fr;
+}
+
 .product-page-image {
   position: relative;
   display: flex;

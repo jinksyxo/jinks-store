@@ -1497,7 +1497,9 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
   return (
     <section className="featured-section shop-section page-template product-page">
       <div className="product-page-grid">
-        <div className="product-gallery-card">
+        <div
+          className={`product-gallery-card${productImages.length > 1 ? '' : ' product-gallery-card-single-image'}`}
+        >
           <div className="product-page-image product-page-image-primary">
             {productImages.length > 1 ? (
               <button
