@@ -21,13 +21,17 @@ function ProductCard({ product, onNavigate }) {
   const hoverImage = imageUrl(secondaryProductImage) || primaryImage || '/tee-mockup-hover.jpg'
   const hasDeal = product.hasDeal && product.salePrice
   const sellableColors = product.colors?.filter((color) => !HIDDEN_COLOR_OPTIONS.includes(color))
-  const hasMultipleColors = (sellableColors?.length || 0) > 1
+  // The hover swap is only worth showing if there's an actually different
+  // photo behind it -- true for multiple colors, but also for a single
+  // color with a front/back design, so this checks for a distinct image
+  // rather than counting colors.
+  const hasDistinctHoverImage = hoverImage !== primaryImage
   const colorSummary = sellableColors?.length ? sellableColors.map(formatColorLabel).join(', ') : null
   const variantSummary = [colorSummary, sizeSummary].filter(Boolean).join(' • ') || null
   const productHref = `/products/${product.slug}`
 
   return (
-    <article className={`product-card${hasMultipleColors ? '' : ' product-card-single-color'}`}>
+    <article className={`product-card${hasDistinctHoverImage ? '' : ' product-card-single-color'}`}>
       <a
         className="product-art"
         href={productHref}
@@ -44,7 +48,7 @@ function ProductCard({ product, onNavigate }) {
             src={primaryImage}
             alt={`${product.name} mockup`}
           />
-          {hasMultipleColors ? (
+          {hasDistinctHoverImage ? (
             <img
               className="product-image product-image-hover"
               src={hoverImage}
