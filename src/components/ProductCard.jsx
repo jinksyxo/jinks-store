@@ -21,12 +21,13 @@ function ProductCard({ product, onNavigate }) {
   const hoverImage = imageUrl(secondaryProductImage) || primaryImage || '/tee-mockup-hover.jpg'
   const hasDeal = product.hasDeal && product.salePrice
   const sellableColors = product.colors?.filter((color) => !HIDDEN_COLOR_OPTIONS.includes(color))
+  const hasMultipleColors = (sellableColors?.length || 0) > 1
   const colorSummary = sellableColors?.length ? sellableColors.map(formatColorLabel).join(', ') : null
   const variantSummary = [colorSummary, sizeSummary].filter(Boolean).join(' • ') || null
   const productHref = `/products/${product.slug}`
 
   return (
-    <article className="product-card">
+    <article className={`product-card${hasMultipleColors ? '' : ' product-card-single-color'}`}>
       <a
         className="product-art"
         href={productHref}
@@ -43,12 +44,14 @@ function ProductCard({ product, onNavigate }) {
             src={primaryImage}
             alt={`${product.name} mockup`}
           />
-          <img
-            className="product-image product-image-hover"
-            src={hoverImage}
-            alt=""
-            aria-hidden="true"
-          />
+          {hasMultipleColors ? (
+            <img
+              className="product-image product-image-hover"
+              src={hoverImage}
+              alt=""
+              aria-hidden="true"
+            />
+          ) : null}
         </div>
       </a>
 

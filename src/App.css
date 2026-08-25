@@ -962,6 +962,14 @@
   opacity: 1;
 }
 
+/* Only one color to show, so there's no second photo to swap to on hover --
+   the hover image isn't even rendered for these; keep the primary at full
+   opacity instead of fading it out to nothing. */
+.product-card-single-color:hover .product-image-primary,
+.product-card-single-color:focus-within .product-image-primary {
+  opacity: 1;
+}
+
 .product-copy {
   display: grid;
   gap: 0.8rem;
