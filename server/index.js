@@ -1823,6 +1823,27 @@ async function listShippingSpreadsheets() {
 const ERROR_ALERT_COOLDOWN_MS = 5 * 60 * 1000
 let lastErrorAlertSentAt = 0
 
+// Node's fetch() (undici) wraps network-level failures in a generic
+// `TypeError: fetch failed` with a `.stack` that's often just that one line
+// -- the actually useful bit (ECONNREFUSED, ENOTFOUND, ETIMEDOUT, etc.)
+// lives on `.cause`, potentially several levels deep. Walk the chain so
+// alert emails carry the real reason instead of a repeat of the message.
+function describeErrorCauseChain(error) {
+  const lines = []
+  let current = error?.cause
+
+  while (current) {
+    const details = ['code', 'errno', 'syscall', 'hostname', 'address', 'port']
+      .filter((key) => current[key] !== undefined)
+      .map((key) => `${key}=${current[key]}`)
+    const label = current instanceof Error ? `${current.name}: ${current.message}` : String(current)
+    lines.push(details.length ? `${label} (${details.join(', ')})` : label)
+    current = current instanceof Error ? current.cause : undefined
+  }
+
+  return lines
+}
+
 async function sendErrorAlertEmail(error, context = {}) {
   const now = Date.now()
 
@@ -1833,7 +1854,11 @@ async function sendErrorAlertEmail(error, context = {}) {
   lastErrorAlertSentAt = now
 
   const message = error instanceof Error ? error.message : String(error)
-  const stack = error instanceof Error && error.stack ? error.stack : ''
+  const rawStack = error instanceof Error && error.stack ? error.stack : ''
+  // Only worth showing if it has actual call frames beyond the one-line
+  // header -- a bare "TypeError: fetch failed" with nothing else is noise.
+  const stack = rawStack.includes('\n') ? rawStack : ''
+  const causeChain = error instanceof Error ? describeErrorCauseChain(error) : []
   const contextLines = Object.entries(context)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${key}: ${value}`)
@@ -1843,6 +1868,7 @@ async function sendErrorAlertEmail(error, context = {}) {
     `An unexpected error occurred at ${timestamp}.`,
     contextLines.length ? contextLines.join('\n') : null,
     message,
+    causeChain.length ? `Caused by:\n${causeChain.join('\n')}` : null,
     stack,
   ]
     .filter(Boolean)
@@ -1853,6 +1879,9 @@ async function sendErrorAlertEmail(error, context = {}) {
       ? `<p>${contextLines.map((line) => line.replace(/</g, '&lt;')).join('<br>')}</p>`
       : '',
     `<p><strong>${message.replace(/</g, '&lt;')}</strong></p>`,
+    causeChain.length
+      ? `<p>Caused by:<br>${causeChain.map((line) => line.replace(/</g, '&lt;')).join('<br>')}</p>`
+      : '',
     stack ? `<pre>${stack.replace(/</g, '&lt;').slice(0, 4000)}</pre>` : '',
   ]
     .filter(Boolean)
