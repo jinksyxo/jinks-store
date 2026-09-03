@@ -2069,24 +2069,30 @@ async function generateShippingSpreadsheet({ trigger = 'manual' } = {}) {
 const SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY = 'shipping_spreadsheet_last_run_date'
 
 async function maybeRunScheduledShippingSpreadsheet() {
-  const { weekday, hour, dateKey } = getZonedDateParts(new Date(), SHIPPING_SPREADSHEET_TIMEZONE)
-
-  if (!SHIPPING_SPREADSHEET_WEEKDAYS.has(weekday) || hour < SHIPPING_SPREADSHEET_HOUR) {
-    return
-  }
-
-  // Persisted in the database, not a module-level variable -- a plain
-  // in-memory flag resets on every process restart, so a redeploy during the
-  // trigger window on a scheduled day would re-send the email every time.
-  const lastRunDateKey = await readAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY)
-
-  if (lastRunDateKey === dateKey) {
-    return
-  }
-
-  await writeAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY, dateKey)
-
+  // Runs every 5 minutes via setInterval with no caller to catch a
+  // rejection, all day long on scheduled days once past the trigger hour --
+  // so the whole body needs to be inside the try, not just the generation
+  // call. readAppSetting/writeAppSetting are real network calls (Turso) and
+  // a transient failure in either was previously an unhandled rejection.
   try {
+    const { weekday, hour, dateKey } = getZonedDateParts(new Date(), SHIPPING_SPREADSHEET_TIMEZONE)
+
+    if (!SHIPPING_SPREADSHEET_WEEKDAYS.has(weekday) || hour < SHIPPING_SPREADSHEET_HOUR) {
+      return
+    }
+
+    // Persisted in the database, not a module-level variable -- a plain
+    // in-memory flag resets on every process restart, so a redeploy during
+    // the trigger window on a scheduled day would re-send the email every
+    // time.
+    const lastRunDateKey = await readAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY)
+
+    if (lastRunDateKey === dateKey) {
+      return
+    }
+
+    await writeAppSetting(SHIPPING_SPREADSHEET_LAST_RUN_SETTING_KEY, dateKey)
+
     const result = await generateShippingSpreadsheet({ trigger: 'scheduled' })
 
     if (result.created) {
