@@ -42,47 +42,38 @@ function formatAddress(shippingDetails) {
 export default function TrackOrderPage({ onNavigate }) {
   const initialParams =
     typeof window === 'undefined' ? null : new URLSearchParams(window.location.search)
-  const [reference, setReference] = useState(() => initialParams?.get('ref') || '')
-  const [email, setEmail] = useState(() => initialParams?.get('email') || '')
-  const [status, setStatus] = useState('idle')
+  const reference = initialParams?.get('ref') || ''
+  const email = initialParams?.get('email') || ''
+  const [status, setStatus] = useState(reference.trim() && email.trim() ? 'loading' : 'missing')
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
-
-  const runLookup = async (lookupReference, lookupEmail) => {
-    if (!lookupReference.trim() || !lookupEmail.trim()) {
-      return
-    }
-
-    setStatus('loading')
-    setError('')
-
-    try {
-      const payload = await trackOrder(lookupReference, lookupEmail)
-      setResult(payload)
-      setStatus('idle')
-    } catch (lookupError) {
-      setResult(null)
-      setError(lookupError.message || 'That order could not be looked up right now.')
-      setStatus('idle')
-    }
-  }
 
   useEffect(() => {
     if (!reference.trim() || !email.trim()) {
       return
     }
 
-    // Defer to a microtask so the lookup's setState calls don't run
-    // synchronously within the effect body itself.
-    queueMicrotask(() => runLookup(reference, email))
-    // Only auto-run once, from whatever the URL handed us on load.
+    let cancelled = false
+
+    trackOrder(reference, email)
+      .then((payload) => {
+        if (cancelled) return
+        setResult(payload)
+        setStatus('idle')
+      })
+      .catch((lookupError) => {
+        if (cancelled) return
+        setResult(null)
+        setError(lookupError.message || 'That order could not be looked up right now.')
+        setStatus('idle')
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // Only ever looks up the reference/email the page loaded with.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const handleSubmit = (event) => {
-    event.preventDefault()
-    runLookup(reference, email)
-  }
 
   const trackingUrl = result?.found
     ? buildCarrierTrackingUrl(result.shippingCarrier, result.trackingNumber)
@@ -92,59 +83,47 @@ export default function TrackOrderPage({ onNavigate }) {
     <section className="featured-section shop-section page-template checkout-page">
       <div className="section-heading">
         <h2>track your order</h2>
-        <p>Enter the order reference from your receipt and the email you checked out with.</p>
       </div>
 
-      <div className={result ? 'cart-layout' : 'track-order-layout-centered'}>
-        <form className="newsletter-card track-order-lookup-card" onSubmit={handleSubmit}>
-          <p className="panel-label">order lookup</p>
-          <div className="product-form track-order-form">
-            <label className="track-order-field">
-              <span>Order reference</span>
-              <input
-                type="text"
-                value={reference}
-                onChange={(event) => setReference(event.target.value)}
-                placeholder="e.g. a1b2c3d4e5f6"
-                required
-              />
-            </label>
-            <label className="track-order-field track-order-field-email">
-              <span>Email</span>
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
-                required
-              />
-            </label>
-          </div>
-          <div className="cart-summary-actions">
-            <button
-              type="submit"
-              className="button button-primary"
-              disabled={status === 'loading'}
-            >
-              {status === 'loading' ? 'Looking up…' : 'Track order'}
-            </button>
-          </div>
-          {error ? <p className="checkout-feedback">{error}</p> : null}
-        </form>
+      <div className="track-order-layout-centered">
+        {status === 'missing' ? (
+          <aside className="newsletter-card cart-summary track-order-result-card">
+            <p className="panel-label">status</p>
+            <h3>No order to show</h3>
+            <p>
+              This page only works from the link in your order confirmation or shipping emails.
+            </p>
+          </aside>
+        ) : null}
+
+        {status === 'loading' ? (
+          <aside className="newsletter-card cart-summary track-order-result-card">
+            <p className="panel-label">status</p>
+            <h3>Looking up your order…</h3>
+          </aside>
+        ) : null}
+
+        {error ? (
+          <aside className="newsletter-card cart-summary track-order-result-card">
+            <p className="panel-label">status</p>
+            <h3>Order not found</h3>
+            <p>{error}</p>
+          </aside>
+        ) : null}
 
         {result && !result.found ? (
-          <aside className="newsletter-card cart-summary">
+          <aside className="newsletter-card cart-summary track-order-result-card">
             <p className="panel-label">status</p>
             <h3>Order not found</h3>
             <p>
-              We couldn&apos;t find an order with that reference and email. Double-check both, or
-              wait a minute if you just checked out — new orders take a moment to appear here.
+              We couldn&apos;t find an order with that reference and email. Wait a minute if you
+              just checked out — new orders take a moment to appear here.
             </p>
           </aside>
         ) : null}
 
         {result?.found ? (
-          <aside className="newsletter-card cart-summary">
+          <aside className="newsletter-card cart-summary track-order-result-card">
             <p className="panel-label">status</p>
             <h3>{FULFILLMENT_STATUS_LABELS[result.fulfillmentStatus] || 'Order received'}</h3>
 

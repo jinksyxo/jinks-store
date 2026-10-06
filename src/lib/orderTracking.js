@@ -4,7 +4,7 @@
 // customer sees it.
 
 export const FULFILLMENT_STATUS_LABELS = {
-  unfulfilled: 'Order received',
+  unfulfilled: 'Order placed',
   preparing: 'Preparing',
   packed: 'Packed',
   shipped: 'Shipped',

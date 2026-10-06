@@ -133,6 +133,38 @@ const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.de
 const SHIPPING_SPREADSHEET_ALERT_EMAIL =
   process.env.SHIPPING_SPREADSHEET_ALERT_EMAIL || 'jinks@matsumotoshop.com'
 const ADMIN_ALERT_EMAIL = process.env.ADMIN_ALERT_EMAIL || SHIPPING_SPREADSHEET_ALERT_EMAIL
+
+// Shippo (shipping labels). SHIPPO_API_TOKEN is shared with another family
+// site's Shippo account -- every shipment/transaction this app creates is
+// tagged with SHIPPO_METADATA_PREFIX (default "matsumoto") via Shippo's
+// metadata field so the two stores' labels stay visually distinguishable in
+// the shared dashboard. Use a sk_test_/shippo_test_ token until this is
+// verified end to end; it starts with "shippo_test_" instead of
+// "shippo_live_" and test labels are free and don't dispatch anything real.
+const SHIPPO_API_TOKEN = process.env.SHIPPO_API_TOKEN || ''
+const SHIPPO_METADATA_PREFIX = process.env.SHIPPO_METADATA_PREFIX || 'matsumoto'
+// Ship-from address printed on every real label -- must be filled in with
+// the actual business/return address before this is used for real.
+const SHIP_FROM_ADDRESS = {
+  name: process.env.SHIP_FROM_NAME || '',
+  street1: process.env.SHIP_FROM_STREET1 || '',
+  street2: process.env.SHIP_FROM_STREET2 || '',
+  city: process.env.SHIP_FROM_CITY || '',
+  state: process.env.SHIP_FROM_STATE || '',
+  zip: process.env.SHIP_FROM_ZIP || '',
+  country: process.env.SHIP_FROM_COUNTRY || 'US',
+  phone: process.env.SHIP_FROM_PHONE || '',
+  email: process.env.SHIP_FROM_EMAIL || '',
+}
+// Default package preset (a single tee in a poly mailer) -- overridable per
+// label from the dev portal. Weight intentionally rounds up slightly so a
+// rate quote doesn't come back under-postaged.
+const SHIP_DEFAULT_PARCEL = {
+  weightLb: Number(process.env.SHIP_DEFAULT_WEIGHT_LB || 0.4),
+  lengthIn: Number(process.env.SHIP_DEFAULT_LENGTH_IN || 12),
+  widthIn: Number(process.env.SHIP_DEFAULT_WIDTH_IN || 9),
+  heightIn: Number(process.env.SHIP_DEFAULT_HEIGHT_IN || 1),
+}
 // Utah store hours. Override with SHIPPING_SPREADSHEET_TIMEZONE if that ever changes.
 const SHIPPING_SPREADSHEET_TIMEZONE =
   process.env.SHIPPING_SPREADSHEET_TIMEZONE || 'America/Denver'
@@ -940,6 +972,7 @@ function normalizeStripeOrderRecord(order) {
     checkoutStatus: order?.checkoutStatus ? String(order.checkoutStatus).trim() : 'open',
     shippingCarrier: order?.shippingCarrier ? String(order.shippingCarrier).trim() : '',
     trackingNumber: order?.trackingNumber ? String(order.trackingNumber).trim() : '',
+    labelUrl: order?.labelUrl ? String(order.labelUrl).trim() : '',
     shippingMethod: order?.shippingMethod ? String(order.shippingMethod).trim() : '',
     fulfillmentNotes: order?.fulfillmentNotes ? String(order.fulfillmentNotes).trim() : '',
     fulfilledAt: order?.fulfilledAt ? String(order.fulfilledAt).trim() : null,
@@ -1946,6 +1979,143 @@ async function sendShippingSpreadsheetEmail({ fileName, orderCount, generatedAt 
   return sendResendEmail({ to: SHIPPING_SPREADSHEET_ALERT_EMAIL, subject, text, html })
 }
 
+// Thin wrapper around Shippo's REST API. Every call site using this is
+// responsible for its own try/catch -- this never swallows errors itself,
+// so a caller can't accidentally end up with an unguarded await (the exact
+// bug class that caused the shipping-spreadsheet unhandled rejections).
+async function shippoRequest(path, body) {
+  if (!SHIPPO_API_TOKEN) {
+    throw new Error('SHIPPO_API_TOKEN is not configured.')
+  }
+
+  const response = await fetch(`https://api.goshippo.com${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `ShippoToken ${SHIPPO_API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  const payload = await response.json().catch(() => null)
+
+  if (!response.ok) {
+    const detail = payload ? JSON.stringify(payload).slice(0, 500) : `HTTP ${response.status}`
+    throw new Error(`Shippo request to ${path} failed: ${detail}`)
+  }
+
+  return payload
+}
+
+function shippoMetadataForOrder(order) {
+  return `${SHIPPO_METADATA_PREFIX}-${order.checkoutReference || order.sessionId}`
+}
+
+// Builds a Shippo parcel object from either an admin-supplied override or
+// the SHIP_DEFAULT_PARCEL preset.
+function buildShippoParcel(overrides = {}) {
+  const weightLb = Number(overrides.weightLb) > 0 ? Number(overrides.weightLb) : SHIP_DEFAULT_PARCEL.weightLb
+  const lengthIn = Number(overrides.lengthIn) > 0 ? Number(overrides.lengthIn) : SHIP_DEFAULT_PARCEL.lengthIn
+  const widthIn = Number(overrides.widthIn) > 0 ? Number(overrides.widthIn) : SHIP_DEFAULT_PARCEL.widthIn
+  const heightIn = Number(overrides.heightIn) > 0 ? Number(overrides.heightIn) : SHIP_DEFAULT_PARCEL.heightIn
+
+  return {
+    length: String(lengthIn),
+    width: String(widthIn),
+    height: String(heightIn),
+    distance_unit: 'in',
+    weight: String(weightLb),
+    mass_unit: 'lb',
+  }
+}
+
+function buildShippoAddressTo(order) {
+  const shippingDetails = order.shippingDetails
+  const address = shippingDetails?.address
+
+  if (!shippingDetails || !address?.line1) {
+    return null
+  }
+
+  return {
+    name: shippingDetails.name || order.customerName || '',
+    street1: address.line1,
+    street2: address.line2 || '',
+    city: address.city || '',
+    state: address.state || '',
+    zip: address.postalCode || '',
+    country: address.country || 'US',
+    phone: shippingDetails.phone || order.customerPhone || '',
+    email: order.customerEmail || '',
+  }
+}
+
+// Creates a rated shipment, buys the cheapest rate, and returns everything
+// the order record + admin UI need. Throws on any failure -- the caller
+// (the /buy-label route) is responsible for catching it, same as every
+// other route in this file.
+async function buyShippingLabelForOrder(order, parcelOverrides) {
+  if (!SHIP_FROM_ADDRESS.name || !SHIP_FROM_ADDRESS.street1 || !SHIP_FROM_ADDRESS.zip) {
+    throw new Error(
+      'Ship-from address is not fully configured (SHIP_FROM_NAME/STREET1/CITY/STATE/ZIP env vars).',
+    )
+  }
+
+  const addressTo = buildShippoAddressTo(order)
+
+  if (!addressTo) {
+    throw new Error('This order has no shipping address on file.')
+  }
+
+  const metadata = shippoMetadataForOrder(order)
+
+  const shipment = await shippoRequest('/shipments/', {
+    address_from: SHIP_FROM_ADDRESS,
+    address_to: addressTo,
+    parcels: [buildShippoParcel(parcelOverrides)],
+    async: false,
+    metadata,
+  })
+
+  if (shipment?.status === 'ERROR' || !Array.isArray(shipment?.rates) || !shipment.rates.length) {
+    const messages = Array.isArray(shipment?.messages)
+      ? shipment.messages.map((m) => m.text || JSON.stringify(m)).join('; ')
+      : 'No rates were returned.'
+    throw new Error(`Shippo could not rate this shipment: ${messages}`)
+  }
+
+  const cheapestRate = shipment.rates
+    .filter((rate) => Number(rate.amount) > 0)
+    .sort((a, b) => Number(a.amount) - Number(b.amount))[0]
+
+  if (!cheapestRate) {
+    throw new Error('Shippo returned rates, but none had a usable price.')
+  }
+
+  const transaction = await shippoRequest('/transactions/', {
+    rate: cheapestRate.object_id,
+    label_file_type: 'PDF',
+    async: false,
+    metadata,
+  })
+
+  if (transaction?.status !== 'SUCCESS') {
+    const messages = Array.isArray(transaction?.messages)
+      ? transaction.messages.map((m) => m.text || JSON.stringify(m)).join('; ')
+      : transaction?.status || 'unknown error'
+    throw new Error(`Shippo label purchase failed: ${messages}`)
+  }
+
+  return {
+    trackingNumber: transaction.tracking_number,
+    shippingCarrier: cheapestRate.provider || '',
+    labelUrl: transaction.label_url,
+    rateAmount: cheapestRate.amount,
+    serviceLevel: cheapestRate.servicelevel?.name || '',
+    test: Boolean(transaction.test),
+  }
+}
+
 // Builds a direct link to a carrier's own tracking page. Returns null for
 // carriers we don't recognize (the raw tracking number is still shown, just
 // without a clickable link).
@@ -1976,6 +2146,92 @@ function buildCarrierTrackingUrl(carrier, trackingNumber) {
   return null
 }
 
+// Shared wrapper for every customer-facing marketing/transactional email --
+// a bordered, logo-topped card matching the site's own look (serif
+// headings, blue eyebrow accent, black CTA button) so shipping emails,
+// and any campaign emails built on top of this later, look consistent.
+function buildBrandedEmailHtml({
+  preheader = '',
+  eyebrow = '',
+  heading,
+  bodyHtml,
+  detailRows = [],
+  ctaLabel,
+  ctaUrl,
+  footerNote = '',
+}) {
+  const logoUrl = `${APP_URL.replace(/\/$/, '')}/store-logo-white.png`
+
+  const detailsHtml = detailRows.length
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:28px 0 8px;border:1px solid #e4e2e2;border-collapse:collapse;">
+        ${detailRows
+          .map(
+            (row, index) => `
+          <tr>
+            <td style="padding:14px 20px;${index === 0 ? '' : 'border-top:1px solid #e4e2e2;'}font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#8a8a8a;white-space:nowrap;">${row.label}</td>
+            <td style="padding:14px 20px;${index === 0 ? '' : 'border-top:1px solid #e4e2e2;'}font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111111;text-align:right;">${row.value}</td>
+          </tr>`,
+          )
+          .join('')}
+      </table>`
+    : ''
+
+  const ctaHtml =
+    ctaLabel && ctaUrl
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0 4px;">
+          <tr>
+            <td style="background:#111111;">
+              <a href="${ctaUrl}" style="display:inline-block;padding:14px 30px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:600;letter-spacing:0.03em;color:#ffffff;text-decoration:none;">${ctaLabel}</a>
+            </td>
+          </tr>
+        </table>`
+      : ''
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>matsumoto*</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap" />
+  </head>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <span style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${preheader}</span>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;">
+      <tr>
+        <td align="center" style="padding:40px 16px;">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e4e2e2;">
+            <tr>
+              <td style="padding:36px 40px 0;text-align:center;">
+                <img src="${logoUrl}" alt="matsumoto*" width="150" style="display:inline-block;border:0;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:30px 40px 8px;">
+                ${
+                  eyebrow
+                    ? `<p style="margin:0 0 10px;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#003bd1;">${eyebrow}</p>`
+                    : ''
+                }
+                <h1 style="margin:0 0 16px;font-family:'Instrument Serif',Georgia,'Times New Roman',serif;font-weight:400;font-size:30px;line-height:1.25;color:#000000;">${heading}</h1>
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#000000;">${bodyHtml}</div>
+                ${detailsHtml}
+                ${ctaHtml}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 40px 34px;">
+                <p style="margin:0;border-top:1px solid #e4e2e2;padding-top:20px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#9a9a9a;">${footerNote || 'matsumoto*'}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
+}
+
 async function sendOrderShippedEmail(order) {
   if (!order.customerEmail) {
     return { sent: false, error: 'Order has no customer email on file.' }
@@ -1987,6 +2243,33 @@ async function sendOrderShippedEmail(order) {
   const carrierTrackingUrl = buildCarrierTrackingUrl(order.shippingCarrier, order.trackingNumber)
   const carrierLabel = order.shippingCarrier ? ` via ${order.shippingCarrier}` : ''
   const subject = 'Your matsumoto* order has shipped'
+
+  const detailRows = [
+    order.shippingCarrier ? { label: 'Carrier', value: order.shippingCarrier } : null,
+    order.trackingNumber
+      ? {
+          label: 'Tracking number',
+          value: carrierTrackingUrl
+            ? `<a href="${carrierTrackingUrl}" style="color:#003bd1;text-decoration:none;">${order.trackingNumber}</a>`
+            : order.trackingNumber,
+        }
+      : null,
+    order.checkoutReference
+      ? { label: 'Order reference', value: order.checkoutReference }
+      : null,
+  ].filter(Boolean)
+
+  const html = buildBrandedEmailHtml({
+    preheader: `Your order is on its way${carrierLabel}.`,
+    eyebrow: 'order shipped',
+    heading: 'Your order is on its way.',
+    bodyHtml: `<p style="margin:0;">Your matsumoto* order has shipped${carrierLabel} and is headed your way.</p>`,
+    detailRows,
+    ctaLabel: 'Track your order',
+    ctaUrl: trackOrderUrl,
+    footerNote: 'You are receiving this email because you placed an order with matsumoto*.',
+  })
+
   const text = [
     `Your order is on its way${carrierLabel}.`,
     order.trackingNumber ? `Tracking number: ${order.trackingNumber}` : null,
@@ -1995,19 +2278,6 @@ async function sendOrderShippedEmail(order) {
   ]
     .filter(Boolean)
     .join('\n\n')
-  const html = [
-    `<p>Your order is on its way${carrierLabel}.</p>`,
-    order.trackingNumber
-      ? `<p><strong>Tracking number:</strong> ${
-          carrierTrackingUrl
-            ? `<a href="${carrierTrackingUrl}">${order.trackingNumber}</a>`
-            : order.trackingNumber
-        }</p>`
-      : '',
-    `<p><a href="${trackOrderUrl}">View your order status</a></p>`,
-  ]
-    .filter(Boolean)
-    .join('')
 
   return sendResendEmail({ to: order.customerEmail, subject, text, html })
 }
@@ -3937,19 +4207,75 @@ const server = http.createServer(async (request, response) => {
         orders.map((order) => (order.sessionId === sessionId ? updatedOrder : order)),
       )
 
-      // Email the customer their tracking info the moment a tracking number
-      // is newly added or changed to something different -- not on every
-      // save, so editing fulfillment notes or refund status doesn't spam a
-      // repeat "shipped" email.
+      // Email the customer the moment fulfillment status is manually moved
+      // to "shipped" -- not on every save, so editing fulfillment notes or
+      // refund status (or re-saving an already-shipped order) doesn't spam
+      // a repeat email.
       let shippedEmail = null
-      const trackingNumberChanged =
-        updatedOrder.trackingNumber && updatedOrder.trackingNumber !== existingOrder.trackingNumber
+      const justMarkedShipped =
+        updatedOrder.fulfillmentStatus === 'shipped' && existingOrder.fulfillmentStatus !== 'shipped'
 
-      if (trackingNumberChanged) {
+      if (justMarkedShipped) {
         shippedEmail = await sendOrderShippedEmail(updatedOrder)
       }
 
       jsonResponse(response, 200, { order: publicStripeOrder(updatedOrder), shippedEmail })
+      return
+    }
+
+    if (request.method === 'POST' && pathname.startsWith('/api/admin/orders/') && pathname.endsWith('/buy-label')) {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const sessionId = pathname.replace('/api/admin/orders/', '').replace('/buy-label', '')
+      const orders = await readStripeOrders()
+      const existingOrder = orders.find((order) => order.sessionId === sessionId)
+
+      if (!existingOrder) {
+        jsonResponse(response, 404, { error: 'Order not found.' })
+        return
+      }
+
+      const body = await readJsonBody(request)
+
+      try {
+        const labelResult = await buyShippingLabelForOrder(existingOrder, {
+          weightLb: body.weightLb,
+          lengthIn: body.lengthIn,
+          widthIn: body.widthIn,
+          heightIn: body.heightIn,
+        })
+
+        // Buying a label only attaches carrier/tracking/label info -- it
+        // does not mark the order shipped or email the customer. Shipping
+        // is a separate, manual step (the fulfillment status dropdown)
+        // since the label may sit printed on a desk for a while first.
+        const updatedOrder = normalizeStripeOrderRecord({
+          ...existingOrder,
+          shippingCarrier: labelResult.shippingCarrier,
+          trackingNumber: labelResult.trackingNumber,
+          labelUrl: labelResult.labelUrl,
+          updatedAt: new Date().toISOString(),
+        })
+
+        await writeStripeOrders(
+          orders.map((order) => (order.sessionId === sessionId ? updatedOrder : order)),
+        )
+
+        jsonResponse(response, 200, {
+          order: publicStripeOrder(updatedOrder),
+          rateAmount: labelResult.rateAmount,
+          serviceLevel: labelResult.serviceLevel,
+          test: labelResult.test,
+        })
+      } catch (error) {
+        console.error('[buy-label] failed:', error)
+        jsonResponse(response, 400, {
+          error: error instanceof Error ? error.message : 'Label purchase failed.',
+        })
+      }
+
       return
     }
 

@@ -1404,33 +1404,9 @@
   justify-content: center;
 }
 
-.track-order-lookup-card {
+.track-order-result-card {
   width: 100%;
-  max-width: 30rem;
-}
-
-.track-order-form {
-  max-width: 26rem;
-}
-
-.track-order-field {
-  display: grid;
-  gap: 0.45rem;
-  width: 100%;
-}
-
-.track-order-field-email {
-  margin-bottom: 1.25rem;
-}
-
-.track-order-field input {
-  width: 100%;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--text-h);
-  padding: 0.78rem 0.85rem;
-  font: inherit;
-  box-sizing: border-box;
+  max-width: 32rem;
 }
 
 .product-stock-note,
@@ -2224,6 +2200,25 @@
   gap: 0.75rem;
   align-items: center;
   justify-content: space-between;
+}
+
+.dev-order-label-buy {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.dev-order-label-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  opacity: 0.72;
+}
+
+.dev-order-label-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
 }
 
 .dev-order-footer .dev-form-success {

@@ -198,6 +198,26 @@ export async function updateStripeOrder(orderSessionId, updates) {
   return { order: payload.order, shippedEmail: payload.shippedEmail || null }
 }
 
+// Buys a real shipping label via Shippo for this order (auto-picks the
+// cheapest rate), updates the order's carrier/tracking/fulfillment status,
+// and emails the customer -- all server-side. `overrides` optionally
+// supplies weightLb/lengthIn/widthIn/heightIn to replace the default
+// package preset for this one label.
+export async function buyShippingLabel(orderSessionId, overrides = {}) {
+  const payload = await parseJsonResponse(
+    await fetch(`/api/admin/orders/${encodeURIComponent(orderSessionId)}/buy-label`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify(overrides),
+    }),
+  )
+
+  return payload
+}
+
 export async function updateCustomer(customerEmail, updates) {
   const payload = await parseJsonResponse(
     await fetch(`/api/admin/customers/${encodeURIComponent(customerEmail)}`, {

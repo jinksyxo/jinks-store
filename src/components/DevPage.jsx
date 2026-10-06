@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  buyShippingLabel,
   checkTaxCalculation,
   createStoreBackup,
   downloadAdminFile,
@@ -483,9 +484,45 @@ function UploadedProductList({
   )
 }
 
-function OrdersList({ orders, onSaveOrder, savingOrderId }) {
+function OrdersList({ orders, onSaveOrder, onBuyLabel, savingOrderId }) {
   const [draftOverrides, setDraftOverrides] = useState({})
   const [messages, setMessages] = useState({})
+  const [labelOverrides, setLabelOverrides] = useState({})
+  const [labelMessages, setLabelMessages] = useState({})
+
+  const updateLabelOverride = (sessionId, fieldName, value) => {
+    setLabelOverrides((current) => ({
+      ...current,
+      [sessionId]: { ...(current[sessionId] || {}), [fieldName]: value },
+    }))
+  }
+
+  const handleBuyLabel = async (sessionId) => {
+    const overrides = labelOverrides[sessionId] || {}
+    const parsedOverrides = {
+      weightLb: overrides.weightLb ? Number(overrides.weightLb) : undefined,
+      lengthIn: overrides.lengthIn ? Number(overrides.lengthIn) : undefined,
+      widthIn: overrides.widthIn ? Number(overrides.widthIn) : undefined,
+      heightIn: overrides.heightIn ? Number(overrides.heightIn) : undefined,
+    }
+
+    const result = await onBuyLabel(sessionId, parsedOverrides)
+
+    if (result.ok) {
+      setLabelMessages((current) => ({
+        ...current,
+        [sessionId]: {
+          text: `Label bought: ${result.order.shippingCarrier} ${result.serviceLevel || ''} -- $${result.rateAmount}${result.test ? ' (TEST label, not real postage)' : ''}. Set fulfillment status to "shipped" and save to email the customer.`,
+          tone: 'success',
+        },
+      }))
+    } else {
+      setLabelMessages((current) => ({
+        ...current,
+        [sessionId]: { text: 'Label purchase failed -- see the error above.', tone: 'error' },
+      }))
+    }
+  }
   const orderDrafts = useMemo(
     () =>
       orders.reduce((nextDrafts, order) => {
@@ -652,6 +689,93 @@ function OrdersList({ orders, onSaveOrder, savingOrderId }) {
                 placeholder="Packing notes, shipment details, customer follow-up"
               />
             </label>
+          </div>
+
+          <div className="dev-order-label-buy">
+            <p className="panel-label">buy shipping label (Shippo)</p>
+            <p className="dev-order-label-hint">
+              Leave blank to use the default package preset. Auto-picks the cheapest rate.
+            </p>
+            <div className="dev-order-label-fields">
+              <label className="dev-field">
+                <span>Weight (lb)</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={labelOverrides[order.sessionId]?.weightLb || ''}
+                  onChange={(event) =>
+                    updateLabelOverride(order.sessionId, 'weightLb', event.target.value)
+                  }
+                  placeholder="0.4"
+                />
+              </label>
+              <label className="dev-field">
+                <span>Length (in)</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={labelOverrides[order.sessionId]?.lengthIn || ''}
+                  onChange={(event) =>
+                    updateLabelOverride(order.sessionId, 'lengthIn', event.target.value)
+                  }
+                  placeholder="12"
+                />
+              </label>
+              <label className="dev-field">
+                <span>Width (in)</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={labelOverrides[order.sessionId]?.widthIn || ''}
+                  onChange={(event) =>
+                    updateLabelOverride(order.sessionId, 'widthIn', event.target.value)
+                  }
+                  placeholder="9"
+                />
+              </label>
+              <label className="dev-field">
+                <span>Height (in)</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={labelOverrides[order.sessionId]?.heightIn || ''}
+                  onChange={(event) =>
+                    updateLabelOverride(order.sessionId, 'heightIn', event.target.value)
+                  }
+                  placeholder="1"
+                />
+              </label>
+            </div>
+            {labelMessages[order.sessionId] ? (
+              <p
+                className={
+                  labelMessages[order.sessionId].tone === 'error'
+                    ? 'dev-form-error'
+                    : 'dev-form-success'
+                }
+              >
+                {labelMessages[order.sessionId].text}
+              </p>
+            ) : null}
+            {order.labelUrl ? (
+              <p>
+                <a href={order.labelUrl} target="_blank" rel="noreferrer">
+                  View / print current label
+                </a>
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => handleBuyLabel(order.sessionId)}
+              disabled={isSaving}
+            >
+              {isSaving ? 'Working...' : order.labelUrl ? 'Buy another label' : 'Buy label'}
+            </button>
           </div>
 
           <div className="dev-order-footer">
@@ -1672,6 +1796,29 @@ function DevPage({
     }
   }
 
+  const handleBuyLabel = async (sessionId, overrides) => {
+    setSavingOrderId(sessionId)
+    setOrdersError('')
+
+    try {
+      const result = await buyShippingLabel(sessionId, overrides)
+      setOrders((currentOrders) =>
+        currentOrders.map((order) => (order.sessionId === sessionId ? result.order : order)),
+      )
+      return { ok: true, ...result }
+    } catch (error) {
+      if (String(error.message || '').toLowerCase().includes('unauthorized')) {
+        setIsUnlocked(false)
+        setPasswordError('Your admin session expired. Log in again.')
+      } else {
+        setOrdersError(error.message || 'The label could not be purchased.')
+      }
+      return { ok: false }
+    } finally {
+      setSavingOrderId('')
+    }
+  }
+
   const handleExportStore = async () => {
     setIsExportingStore(true)
     setBackupError('')
@@ -1931,6 +2078,7 @@ function DevPage({
           <OrdersList
             orders={orders}
             onSaveOrder={handleSaveOrder}
+            onBuyLabel={handleBuyLabel}
             savingOrderId={savingOrderId}
           />
         </div>

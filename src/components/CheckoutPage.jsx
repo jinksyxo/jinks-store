@@ -512,7 +512,7 @@ function PaidConfirmation({ session, onNavigate }) {
       <div className="checkout-confirmation-panels">
         <div className="newsletter-card checkout-status-card">
           <p className="panel-label">shipping status</p>
-          <h3>{FULFILLMENT_STATUS_LABELS[session.fulfillmentStatus] || 'Order received'}</h3>
+          <h3>{FULFILLMENT_STATUS_LABELS[session.fulfillmentStatus] || 'Order placed'}</h3>
           {session.shippingCarrier || session.trackingNumber ? (
             <div className="order-summary-breakdown">
               {session.shippingCarrier ? (
