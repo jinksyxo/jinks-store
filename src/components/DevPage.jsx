@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   buyShippingLabel,
   checkTaxCalculation,
@@ -32,6 +32,17 @@ const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 const MAX_IMAGE_COUNT = 6
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024
+
+// Matches the 11:14 ratio the site's own product mockups are rendered at
+// (1100x1400 / 2200x2800 across every uploaded tee mockup) so a manually
+// cropped photo sits in the same frame as the rest of the catalog.
+const CROP_ASPECT_RATIO = 11 / 14
+const CROP_RATIO_TOLERANCE = 0.015
+const CROP_FRAME_WIDTH = 308
+const CROP_FRAME_HEIGHT = Math.round(CROP_FRAME_WIDTH / CROP_ASPECT_RATIO)
+const CROP_OUTPUT_WIDTH = 1100
+const CROP_OUTPUT_HEIGHT = 1400
+const CROP_MAX_ZOOM = 3
 const COLOR_OPTIONS = [
   { id: 'black', label: 'black' },
   { id: 'white', label: 'white' },
@@ -206,6 +217,43 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error(`Could not read ${file.name}.`))
     reader.readAsDataURL(file)
   })
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max)
+}
+
+// The minimum scale (displayed px per natural px) at which the image fully
+// covers the crop frame with no gaps -- this is "zoom 1".
+function getCropCoverScale(naturalWidth, naturalHeight) {
+  return Math.max(CROP_FRAME_WIDTH / naturalWidth, CROP_FRAME_HEIGHT / naturalHeight)
+}
+
+// Keeps the frame fully covered by the image at the current zoom -- the
+// image's displayed edges can never pull inward past the frame's edges.
+function clampCropOffset(offset, naturalWidth, naturalHeight, zoom) {
+  const scale = getCropCoverScale(naturalWidth, naturalHeight) * zoom
+  const displayWidth = naturalWidth * scale
+  const displayHeight = naturalHeight * scale
+
+  return {
+    x: clamp(offset.x, Math.min(0, CROP_FRAME_WIDTH - displayWidth), 0),
+    y: clamp(offset.y, Math.min(0, CROP_FRAME_HEIGHT - displayHeight), 0),
+  }
+}
+
+function imageRatioNeedsCrop(naturalWidth, naturalHeight) {
+  if (!naturalWidth || !naturalHeight) {
+    return false
+  }
+
+  const ratio = naturalWidth / naturalHeight
+  return Math.abs(ratio - CROP_ASPECT_RATIO) > CROP_ASPECT_RATIO * CROP_RATIO_TOLERANCE
+}
+
+function buildCroppedFileName(originalName) {
+  const baseName = String(originalName || 'product-photo').replace(/\.[^./]+$/, '')
+  return `${baseName}-cropped.jpg`
 }
 
 function formatCurrency(value) {
@@ -1093,6 +1141,204 @@ function DevPortalNav({ pathname, onNavigate }) {
   )
 }
 
+// A drag-to-reposition, pinch/scroll-to-zoom crop tool fixed to the site's
+// 11:14 product-mockup ratio. Works the same for a freshly selected file
+// (imageUrl is a blob: URL) or an already-uploaded photo (imageUrl is its
+// /uploads/... URL) -- both are just an <img> source to draw from a canvas.
+function ImageCropModal({ imageName, imageUrl, onApply, onCancel }) {
+  const [naturalSize, setNaturalSize] = useState(null)
+  const [zoom, setZoom] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const [isExporting, setIsExporting] = useState(false)
+  const [error, setError] = useState('')
+  const imageElRef = useRef(null)
+  const dragStateRef = useRef(null)
+
+  const handleImageLoad = (event) => {
+    const { naturalWidth, naturalHeight } = event.target
+
+    if (!naturalWidth || !naturalHeight) {
+      setError('That image could not be read.')
+      return
+    }
+
+    const scale = getCropCoverScale(naturalWidth, naturalHeight)
+    setNaturalSize({ width: naturalWidth, height: naturalHeight })
+    setZoom(1)
+    setOffset({
+      x: (CROP_FRAME_WIDTH - naturalWidth * scale) / 2,
+      y: (CROP_FRAME_HEIGHT - naturalHeight * scale) / 2,
+    })
+  }
+
+  const handlePointerDown = (event) => {
+    if (!naturalSize) {
+      return
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startOffset: offset,
+    }
+  }
+
+  const handlePointerMove = (event) => {
+    if (!dragStateRef.current || !naturalSize) {
+      return
+    }
+
+    const nextOffset = {
+      x: dragStateRef.current.startOffset.x + (event.clientX - dragStateRef.current.startX),
+      y: dragStateRef.current.startOffset.y + (event.clientY - dragStateRef.current.startY),
+    }
+
+    setOffset(clampCropOffset(nextOffset, naturalSize.width, naturalSize.height, zoom))
+  }
+
+  const stopDragging = (event) => {
+    dragStateRef.current = null
+
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const handleZoomChange = (event) => {
+    if (!naturalSize) {
+      return
+    }
+
+    const nextZoom = Number(event.target.value)
+    setZoom(nextZoom)
+    setOffset((currentOffset) =>
+      clampCropOffset(currentOffset, naturalSize.width, naturalSize.height, nextZoom),
+    )
+  }
+
+  const handleApply = () => {
+    if (!naturalSize || !imageElRef.current) {
+      return
+    }
+
+    setIsExporting(true)
+    setError('')
+
+    try {
+      const scale = getCropCoverScale(naturalSize.width, naturalSize.height) * zoom
+      const sourceX = -offset.x / scale
+      const sourceY = -offset.y / scale
+      const sourceWidth = CROP_FRAME_WIDTH / scale
+      const sourceHeight = CROP_FRAME_HEIGHT / scale
+
+      const canvas = document.createElement('canvas')
+      canvas.width = CROP_OUTPUT_WIDTH
+      canvas.height = CROP_OUTPUT_HEIGHT
+      const context = canvas.getContext('2d')
+      context.drawImage(
+        imageElRef.current,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        CROP_OUTPUT_WIDTH,
+        CROP_OUTPUT_HEIGHT,
+      )
+
+      canvas.toBlob(
+        (blob) => {
+          setIsExporting(false)
+
+          if (!blob) {
+            setError('The crop could not be exported. Try again.')
+            return
+          }
+
+          onApply(blob)
+        },
+        'image/jpeg',
+        0.92,
+      )
+    } catch {
+      setIsExporting(false)
+      setError('The crop could not be exported. Try again.')
+    }
+  }
+
+  const displayScale = naturalSize ? getCropCoverScale(naturalSize.width, naturalSize.height) * zoom : 0
+
+  return (
+    <div className="dev-crop-modal-backdrop" role="dialog" aria-modal="true" aria-label="Adjust image crop">
+      <div className="newsletter-card dev-crop-modal">
+        <p className="panel-label">adjust crop</p>
+        <h3 className="dev-crop-modal-title">{imageName}</h3>
+        <p className="dev-crop-hint">
+          Drag to reposition the subject. Cropped to 11:14, the same ratio as the site&apos;s
+          product mockups.
+        </p>
+
+        <div
+          className="dev-crop-frame"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={stopDragging}
+          onPointerCancel={stopDragging}
+        >
+          <img
+            ref={imageElRef}
+            src={imageUrl}
+            alt=""
+            draggable={false}
+            onLoad={handleImageLoad}
+            className="dev-crop-image"
+            style={
+              naturalSize
+                ? {
+                    width: `${naturalSize.width * displayScale}px`,
+                    height: `${naturalSize.height * displayScale}px`,
+                    transform: `translate(${offset.x}px, ${offset.y}px)`,
+                  }
+                : undefined
+            }
+          />
+        </div>
+
+        <label className="dev-crop-zoom">
+          <span>Zoom</span>
+          <input
+            type="range"
+            min="1"
+            max={CROP_MAX_ZOOM}
+            step="0.01"
+            value={zoom}
+            onChange={handleZoomChange}
+            disabled={!naturalSize}
+          />
+        </label>
+
+        {error ? <p className="dev-form-error">{error}</p> : null}
+
+        <div className="dev-crop-actions">
+          <button type="button" className="button button-secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={handleApply}
+            disabled={!naturalSize || isExporting}
+          >
+            {isExporting ? 'Applying...' : 'Apply crop'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DevPage({
   categories,
   products,
@@ -1116,6 +1362,8 @@ function DevPage({
   const [twoFactorError, setTwoFactorError] = useState('')
   const [isVerifyingTwoFactorCode, setIsVerifyingTwoFactorCode] = useState(false)
   const [formState, setFormState] = useState(() => createInitialForm(defaultCategory))
+  const [cropTarget, setCropTarget] = useState(null)
+  const [imageNaturalSizes, setImageNaturalSizes] = useState({})
   const [editingProductId, setEditingProductId] = useState(null)
   const [shirtInventory, setShirtInventory] = useState(() => createBlankInventory())
   const [formErrors, setFormErrors] = useState([])
@@ -1569,6 +1817,71 @@ function DevPage({
   const resetForm = (category = defaultCategory) => {
     setEditingProductId(null)
     setFormState(createInitialForm(category))
+    setCropTarget(null)
+    setImageNaturalSizes({})
+  }
+
+  const handleImagePreviewLoad = (previewId, event) => {
+    const { naturalWidth, naturalHeight } = event.target
+    setImageNaturalSizes((current) => ({
+      ...current,
+      [previewId]: { width: naturalWidth, height: naturalHeight },
+    }))
+  }
+
+  const handleOpenCrop = (preview) => {
+    setCropTarget({ kind: preview.kind, index: preview.index, name: preview.name, url: preview.url })
+  }
+
+  const handleCancelCrop = () => {
+    setCropTarget(null)
+  }
+
+  // Cropping an existing (already-uploaded) image re-uploads it as a new
+  // file -- existing images are only ever referenced by URL in the save
+  // payload, so there's no way to replace just their bytes in place. The
+  // color/primary/secondary role it had carries over to the new slot.
+  const handleApplyCrop = (blob) => {
+    if (!cropTarget) {
+      return
+    }
+
+    const croppedFile = new File([blob], buildCroppedFileName(cropTarget.name), {
+      type: 'image/jpeg',
+    })
+
+    if (cropTarget.kind === 'new') {
+      setFormState((currentState) => ({
+        ...currentState,
+        files: currentState.files.map((file, index) =>
+          index === cropTarget.index ? croppedFile : file,
+        ),
+      }))
+    } else {
+      setFormState((currentState) => {
+        const existingImage = currentState.existingImages[cropTarget.index]
+        const nextExistingImages = normalizeImageDrafts(
+          removeImageAtIndex(currentState.existingImages, cropTarget.index),
+        )
+        const nextFiles = [...currentState.files, croppedFile]
+        const newIndex = nextFiles.length - 1
+
+        return {
+          ...currentState,
+          existingImages: nextExistingImages,
+          files: nextFiles,
+          newImageColors: [...currentState.newImageColors, existingImage?.color || ''],
+          newImagePrimaryIndex: existingImage?.primary
+            ? newIndex
+            : currentState.newImagePrimaryIndex,
+          newImageSecondaryIndex: existingImage?.secondary
+            ? newIndex
+            : currentState.newImageSecondaryIndex,
+        }
+      })
+    }
+
+    setCropTarget(null)
   }
 
   const handleUnlock = async (event) => {
@@ -2546,10 +2859,30 @@ function DevPage({
             </div>
 
             <div className="dev-image-preview-list">
-              {imagePreviews.map((preview) => (
+              {imagePreviews.map((preview) => {
+                const naturalSize = imageNaturalSizes[preview.id]
+                const needsCrop = naturalSize
+                  ? imageRatioNeedsCrop(naturalSize.width, naturalSize.height)
+                  : false
+
+                return (
                 <div className="dev-image-preview" key={preview.id}>
-                  <img src={preview.url} alt={preview.name} />
+                  <img
+                    src={preview.url}
+                    alt={preview.name}
+                    onLoad={(event) => handleImagePreviewLoad(preview.id, event)}
+                  />
                   <span>{preview.name}</span>
+                  {needsCrop ? (
+                    <p className="dev-image-ratio-badge">Doesn&apos;t match the 11:14 product ratio</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => handleOpenCrop(preview)}
+                  >
+                    Adjust crop
+                  </button>
                   <label className="dev-field dev-image-color-field">
                     <span>Image color</span>
                     <select
@@ -2598,7 +2931,8 @@ function DevPage({
                     Remove image
                   </button>
                 </div>
-              ))}
+                )
+              })}
             </div>
 
             {formErrors.length ? (
@@ -2668,6 +3002,15 @@ function DevPage({
             />
           </aside>
         </div>
+      ) : null}
+
+      {cropTarget ? (
+        <ImageCropModal
+          imageName={cropTarget.name}
+          imageUrl={cropTarget.url}
+          onApply={handleApplyCrop}
+          onCancel={handleCancelCrop}
+        />
       ) : null}
     </section>
   )

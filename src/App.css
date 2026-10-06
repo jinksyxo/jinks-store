@@ -2018,6 +2018,86 @@
   font-size: 0.72rem;
 }
 
+.dev-image-ratio-badge {
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #b3462c;
+  font-size: 0.72rem;
+  color: #b3462c;
+}
+
+.dev-crop-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(17, 17, 17, 0.72);
+}
+
+.dev-crop-modal {
+  display: grid;
+  gap: 0.85rem;
+  width: 100%;
+  max-width: 24rem;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.dev-crop-modal-title {
+  margin: 0;
+  word-break: break-word;
+}
+
+.dev-crop-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  opacity: 0.72;
+}
+
+.dev-crop-frame {
+  position: relative;
+  width: 308px;
+  height: 392px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #f5f5f5;
+  cursor: grab;
+  touch-action: none;
+}
+
+.dev-crop-frame:active {
+  cursor: grabbing;
+}
+
+.dev-crop-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+.dev-crop-zoom {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+}
+
+.dev-crop-zoom input {
+  width: 100%;
+}
+
+.dev-crop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
 .dev-inventory-section {
   display: grid;
   gap: 0.85rem;
