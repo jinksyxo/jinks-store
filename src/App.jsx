@@ -2302,10 +2302,47 @@ function AsciiAnimation() {
     // property before play() is attempted — the JSX `muted` attribute alone
     // doesn't always win that race, especially on iOS Safari.
     video.muted = true
-    const playPromise = video.play()
 
-    if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => {})
+    const attemptPlay = () => {
+      const playPromise = video.play()
+
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {})
+      }
+    }
+
+    // WebKit (desktop and mobile Safari) silently rejects play() when it's
+    // called before the video has any data loaded yet -- unlike Chrome, it
+    // doesn't queue the request and resolve it once ready, so calling
+    // play() immediately on mount can fail and just never retry, leaving
+    // the video paused on frame 0 forever. Retrying once data has actually
+    // loaded covers that race.
+    if (video.readyState >= 2) {
+      attemptPlay()
+    } else {
+      video.addEventListener('loadeddata', attemptPlay, { once: true })
+    }
+
+    // Safari's Low Power Mode blocks autoplay outright, muted or not, with
+    // no event to detect it -- the only way to recover is to retry on the
+    // visitor's first interaction with the page, which Safari always
+    // counts as a trusted gesture even for a muted background video.
+    const retryOnFirstInteraction = () => {
+      if (video.paused) {
+        attemptPlay()
+      }
+    }
+
+    const interactionEvents = ['pointerdown', 'touchstart', 'keydown']
+    interactionEvents.forEach((eventName) =>
+      document.addEventListener(eventName, retryOnFirstInteraction, { once: true, passive: true }),
+    )
+
+    return () => {
+      video.removeEventListener('loadeddata', attemptPlay)
+      interactionEvents.forEach((eventName) =>
+        document.removeEventListener(eventName, retryOnFirstInteraction),
+      )
     }
   }, [])
 
