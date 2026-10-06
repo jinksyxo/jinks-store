@@ -2351,41 +2351,31 @@
   background: var(--surface);
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: 16rem minmax(16rem, 1fr);
-  gap: 1.5rem;
-  align-items: start;
+  gap: 1.25rem;
 }
 
-.footer-column {
-  display: grid;
-  gap: 0.9rem;
+.footer-links-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 2rem;
 }
 
-.footer-links {
-  align-content: start;
-}
-
-.footer-link-columns {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, max-content));
-  gap: 2.25rem;
-  align-items: start;
-}
-
-.footer-link-column {
-  display: grid;
-  gap: 0.9rem;
-  align-content: start;
-}
-
-.footer-links a,
+.footer-links-row a,
 .footer-socials a {
   color: var(--text-h);
   text-decoration: none;
 }
 
-.footer-links a {
+.footer-links-row a {
   width: fit-content;
+}
+
+.footer-bottom-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
 }
 
 .footer-socials {
@@ -2393,7 +2383,6 @@
   flex-wrap: nowrap;
   gap: 0.75rem;
   align-items: center;
-  margin-top: 0.6rem;
 }
 
 .footer-socials a {
@@ -2425,9 +2414,7 @@
 
 .ascii-gif {
   display: block;
-  margin: 0 1rem 0 auto;
-  width: 75%;
-  max-width: 100%;
+  width: min(14rem, 45vw);
   height: auto;
   object-fit: contain;
   background: transparent;
@@ -2462,7 +2449,6 @@
   .product-page-grid,
   .product-gallery-card,
   .category-rail,
-  .site-footer,
   .dev-page-grid,
   .cart-layout {
     grid-template-columns: 1fr;
@@ -2553,11 +2539,6 @@
 
   .newsletter-card {
     margin: 0 2rem 2rem;
-  }
-
-  .footer-link-columns {
-    grid-template-columns: 1fr;
-    gap: 1.25rem;
   }
 
   .site-footer {
@@ -2740,33 +2721,10 @@
 
   .site-footer {
     padding: 1rem 1.25rem;
-    grid-template-columns: 1fr 1fr;
-    grid-auto-flow: column;
-    grid-template-rows: repeat(4, auto);
-    row-gap: 0.9rem;
-    column-gap: 1.25rem;
   }
 
-  .footer-column.footer-links,
-  .footer-link-columns,
-  .footer-link-column,
-  .footer-link-column-legal {
-    display: contents;
-  }
-
-  .footer-link-column-legal a {
-    justify-self: end;
-    text-align: right;
-  }
-
-  .footer-column.footer-ascii {
-    align-self: end;
-  }
-
-  .ascii-gif {
-    width: 100%;
-    max-width: 100%;
-    margin: 0;
+  .footer-links-row {
+    gap: 0.6rem 1.25rem;
   }
 
   .dev-form,

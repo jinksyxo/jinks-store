@@ -2327,47 +2327,27 @@ function AsciiAnimation() {
 function SiteFooter({ onNavigate }) {
   return (
     <footer className="site-footer">
-      <div className="footer-column footer-links">
-        <div className="footer-link-columns">
-          <div className="footer-link-column">
-            {footerPrimaryLinks.map((link) => (
-              <a
-                key={link.label}
-                href={link.href}
-                onClick={(event) => onNavigate(event, link.href)}
-              >
-                {link.label}
-              </a>
-            ))}
-
-            <div className="footer-socials">
-              <a href="https://instagram.com" target="_blank" rel="noreferrer" aria-label="Instagram">
-                <SocialIcon kind="instagram" />
-              </a>
-              <a href="https://tiktok.com" target="_blank" rel="noreferrer" aria-label="TikTok">
-                <SocialIcon kind="tiktok" />
-              </a>
-              <a href="https://facebook.com" target="_blank" rel="noreferrer" aria-label="Facebook">
-                <SocialIcon kind="facebook" />
-              </a>
-            </div>
-          </div>
-
-          <div className="footer-link-column footer-link-column-legal">
-            {footerPolicyLinks.map((link) => (
-              <a
-                key={link.label}
-                href={link.href}
-                onClick={(event) => onNavigate(event, link.href)}
-              >
-                {link.label}
-              </a>
-            ))}
-          </div>
-        </div>
+      <div className="footer-links-row">
+        {[...footerPrimaryLinks, ...footerPolicyLinks].map((link) => (
+          <a key={link.label} href={link.href} onClick={(event) => onNavigate(event, link.href)}>
+            {link.label}
+          </a>
+        ))}
       </div>
 
-      <div className="footer-column footer-ascii">
+      <div className="footer-bottom-row">
+        <div className="footer-socials">
+          <a href="https://instagram.com" target="_blank" rel="noreferrer" aria-label="Instagram">
+            <SocialIcon kind="instagram" />
+          </a>
+          <a href="https://tiktok.com" target="_blank" rel="noreferrer" aria-label="TikTok">
+            <SocialIcon kind="tiktok" />
+          </a>
+          <a href="https://facebook.com" target="_blank" rel="noreferrer" aria-label="Facebook">
+            <SocialIcon kind="facebook" />
+          </a>
+        </div>
+
         <AsciiAnimation />
       </div>
     </footer>
