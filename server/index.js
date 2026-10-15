@@ -2869,20 +2869,64 @@ async function fulfillCheckoutSession(sessionId, event) {
 
   await writeShirtInventory(inventoryUpdate.nextInventory)
   await writeProducts(inventoryUpdate.nextProducts)
-  await writeStripeOrders(
-    updateStripeOrderRecord(existingOrders, {
-      ...baseOrderFields,
-      status: 'fulfilled',
-      fulfilledAt: now,
-      stockAdjustments: inventoryUpdate.stockAdjustments,
-    }),
-  )
+
+  const ordersAfterFulfillment = updateStripeOrderRecord(existingOrders, {
+    ...baseOrderFields,
+    status: 'fulfilled',
+    fulfilledAt: now,
+    stockAdjustments: inventoryUpdate.stockAdjustments,
+  })
+
+  await writeStripeOrders(ordersAfterFulfillment)
+
+  const fulfilledOrder = ordersAfterFulfillment.find((order) => order.sessionId === sessionId)
+
+  if (fulfilledOrder) {
+    await autoBuyShippingLabel(fulfilledOrder)
+  }
 
   return {
     sessionId,
     status: 'fulfilled',
     paymentStatus: checkoutSession.payment_status,
     fulfilled: true,
+  }
+}
+
+// Buys a label the moment an order is fulfilled, so a customer already has
+// real tracking the first time they look their order up -- fulfillment
+// status is deliberately left alone here (still a manual "shipped" step),
+// since that's what actually triggers the customer-facing shipped email,
+// and a label may sit printed for a while before the package is picked up.
+// A failure here (bad/incomplete shipping address, Shippo outage, no
+// ship-from address configured) must never fail the webhook or the order
+// itself -- the order stays fully fulfilled either way, and an admin can
+// always buy the label manually from /dev/orders afterward.
+async function autoBuyShippingLabel(order) {
+  try {
+    const labelResult = await buyShippingLabelForOrder(order, {})
+    const latestOrders = await readStripeOrders()
+
+    await writeStripeOrders(
+      updateStripeOrderRecord(latestOrders, {
+        sessionId: order.sessionId,
+        shippingCarrier: labelResult.shippingCarrier,
+        trackingNumber: labelResult.trackingNumber,
+        labelUrl: labelResult.labelUrl,
+        updatedAt: new Date().toISOString(),
+      }),
+    )
+  } catch (error) {
+    console.error(
+      '[auto-buy-label] failed for order',
+      order.checkoutReference || order.sessionId,
+      error,
+    )
+    await sendErrorAlertEmail(error, {
+      note: 'Automatic label purchase failed after checkout -- buy it manually from /dev/orders',
+      checkoutReference: order.checkoutReference,
+      sessionId: order.sessionId,
+    })
   }
 }
 
