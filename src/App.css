@@ -1216,6 +1216,7 @@
   gap: 0.75rem;
   padding-top: 1.1rem;
   border-top: 1px solid var(--border);
+  min-width: 0;
 }
 
 .cart-promo-label {
@@ -1223,9 +1224,14 @@
   opacity: 0.72;
 }
 
+.cart-promo-form {
+  min-width: 0;
+}
+
 .cart-promo-field {
   display: flex;
   gap: 0.6rem;
+  min-width: 0;
 }
 
 .cart-promo-field input {
@@ -1434,6 +1440,7 @@
   display: grid;
   gap: 1rem;
   padding: 1.25rem;
+  min-width: 0;
 }
 
 .cart-list-single {
@@ -1447,6 +1454,7 @@
   border: 1px solid var(--border);
   background: #fff;
   padding: 1rem;
+  min-width: 0;
 }
 
 .cart-item-image {
@@ -1460,6 +1468,7 @@
 .cart-item-copy {
   display: grid;
   gap: 0.55rem;
+  min-width: 0;
 }
 
 .cart-item-heading {
@@ -1467,6 +1476,10 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.cart-item-heading h3 {
+  min-width: 0;
 }
 
 .cart-item-meta,
@@ -1489,6 +1502,7 @@
   padding: 1.85rem;
   margin: 0;
   align-self: start;
+  min-width: 0;
 }
 
 .checkout-live-page {
@@ -1739,6 +1753,7 @@
 .legal-section-list {
   display: grid;
   gap: 1.25rem;
+  min-width: 0;
 }
 
 .legal-section-card {
@@ -1747,11 +1762,14 @@
   padding: 1.5rem;
   display: grid;
   gap: 0.85rem;
+  min-width: 0;
 }
 
 .legal-section-card h3,
-.legal-section-card p {
+.legal-section-card p,
+.legal-section-card li {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .legal-section-links {
@@ -2390,6 +2408,11 @@
 
 .footer-links-row a {
   width: fit-content;
+  /* Text alone is well under the ~44px touch-target guideline -- this
+     keeps the visible link the same size but pads out its tappable
+     area so it's not a precision tap on a phone. */
+  padding: 0.6rem 0;
+  margin: -0.6rem 0;
 }
 
 .footer-bottom-row {
@@ -2471,9 +2494,15 @@
   .product-page-grid,
   .product-gallery-card,
   .category-rail,
-  .dev-page-grid,
-  .cart-layout {
+  .dev-page-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* A bare 1fr track still defaults to a minimum of auto (its content's
+     min-content), not 0 -- a long product title in the cart was forcing
+     this whole column, and everything in it, wider than the viewport. */
+  .cart-layout {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar {
@@ -2648,15 +2677,13 @@
     padding: 4.6rem 1.5rem 1.15rem;
   }
 
-  .topnav > a.topnav-link-secondary {
-    display: none;
-  }
-
   .topnav {
     width: 100%;
-    gap: 1rem;
+    flex-wrap: wrap;
+    row-gap: 0.6rem;
+    column-gap: 1.25rem;
     margin-right: 0;
-    justify-content: space-between;
+    justify-content: flex-start;
   }
 
   .brand-mark {
@@ -2671,8 +2698,30 @@
     right: 1.5rem;
   }
 
+  /* .network-section shares a bare "1fr" column with several other
+     sections above -- a bare 1fr track still has an auto (min-content)
+     floor, not 0. That was invisible while this section was display:none
+     on mobile; now that it's shown, .network-copy's h1 forces it wide. */
   .network-section {
-    display: none;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .network-copy {
+    max-width: none;
+    margin-left: 0;
+    min-width: 0;
+  }
+
+  /* The desktop heading is deliberately one line at a large size
+     (white-space: nowrap, 3rem+ floor) -- "follow the map*" just doesn't
+     fit on a phone at that size. Let it wrap at a size that does. */
+  .network-copy h1 {
+    white-space: normal;
+    font-size: clamp(2.1rem, 11vw, 3rem);
+  }
+
+  .map-word-mark {
+    top: calc(-0.6em + 38px);
   }
 
   .featured-band {

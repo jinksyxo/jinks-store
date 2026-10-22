@@ -3760,6 +3760,125 @@ async function isKnownRoute(pathname) {
   return products.some((product) => product.slug === slug && product.active !== false)
 }
 
+// ---------------------------------------------------------------------------
+// Per-route <title>/description/OG/Twitter tags, injected into the built
+// index.html server-side. This is NOT full SSR -- the actual page content
+// still only renders once React hydrates client-side, so a crawler that
+// doesn't execute JS still sees an empty <div id="root">. What this does
+// fix: link previews (iMessage, Slack, Discord, Twitter/X, Facebook) all
+// read these meta tags from the raw HTML response and never run JS, so
+// every shared link was showing the same generic "matsumoto*" card
+// regardless of which product or page was actually shared. A real
+// pre-rendered/SSR page is a separate, much larger project.
+const SITE_NAME = 'matsumoto*'
+const DEFAULT_META_DESCRIPTION =
+  'matsumoto* is a clothing brand out of West Jordan, Utah specializing in band tees and one-of-one cyanotype pieces.'
+const DEFAULT_OG_IMAGE = `${APP_URL.replace(/\/$/, '')}/og-preview.png`
+
+const STATIC_PAGE_META = {
+  '/': { title: SITE_NAME },
+  '/tees': {
+    title: `tees | ${SITE_NAME}`,
+    description: 'Hand-printed tees designed with the heart of matsumoto.',
+  },
+  '/dress-shirts': {
+    title: `dress shirts | ${SITE_NAME}`,
+    description: '1 of 1, hand-designed dress shirts made with the heart of matsumoto.',
+  },
+  '/bottoms': { title: `bottoms | ${SITE_NAME}` },
+  '/other-merchandise': { title: `other merchandise | ${SITE_NAME}` },
+  '/about': { title: `about | ${SITE_NAME}` },
+  '/contact': { title: `contact | ${SITE_NAME}` },
+  '/faq': { title: `FAQ | ${SITE_NAME}` },
+  '/tos': { title: `Terms of Service | ${SITE_NAME}` },
+  '/privacy-policy': { title: `Privacy Policy | ${SITE_NAME}` },
+  '/refunds': { title: `Refund Policy | ${SITE_NAME}` },
+  '/track-order': { title: `Track Your Order | ${SITE_NAME}` },
+}
+
+async function buildPageMeta(pathname) {
+  const normalized = normalizeRoutePath(pathname)
+  const productMatch = normalized.match(/^\/products\/([^/]+)$/)
+
+  if (productMatch) {
+    const slug = decodeURIComponent(productMatch[1])
+    const products = await readProducts()
+    const product = products.find((item) => item.slug === slug && item.active !== false)
+
+    if (product) {
+      const primaryImage = product.images.find((image) => image.primary) || product.images[0]
+      const image = primaryImage
+        ? `${APP_URL.replace(/\/$/, '')}${primaryImage.url}`
+        : DEFAULT_OG_IMAGE
+
+      return {
+        title: `${product.name} | ${SITE_NAME}`,
+        description: product.description || DEFAULT_META_DESCRIPTION,
+        image,
+      }
+    }
+
+    return { title: `Product Not Found | ${SITE_NAME}`, description: DEFAULT_META_DESCRIPTION, image: DEFAULT_OG_IMAGE }
+  }
+
+  const staticMeta = STATIC_PAGE_META[normalized]
+
+  if (staticMeta) {
+    return {
+      title: staticMeta.title,
+      description: staticMeta.description || DEFAULT_META_DESCRIPTION,
+      image: DEFAULT_OG_IMAGE,
+    }
+  }
+
+  return { title: `Page Not Found | ${SITE_NAME}`, description: DEFAULT_META_DESCRIPTION, image: DEFAULT_OG_IMAGE }
+}
+
+function escapeHtmlAttr(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+// Replaces the `content="..."` value on the <meta> tag identified by
+// `name="<match>"` or `property="<match>"` -- [\s\S]*? spans the gap so it
+// still matches when the tag's attributes are on separate lines, which
+// Vite's build leaves as-is rather than minifying onto one line.
+function replaceMetaContent(html, attr, match, nextValue) {
+  const pattern = new RegExp(`(<meta[^>]*${attr}="${match}"[\\s\\S]*?content=")[^"]*(")`)
+  return html.replace(pattern, `$1${escapeHtmlAttr(nextValue)}$2`)
+}
+
+let cachedIndexHtmlTemplate = null
+
+function getIndexHtmlTemplate() {
+  if (cachedIndexHtmlTemplate === null) {
+    cachedIndexHtmlTemplate = readFileSync(path.join(distDir, 'index.html'), 'utf8')
+  }
+
+  return cachedIndexHtmlTemplate
+}
+
+async function renderIndexHtmlForRoute(pathname) {
+  const meta = await buildPageMeta(pathname)
+  const canonicalUrl = `${APP_URL.replace(/\/$/, '')}${normalizeRoutePath(pathname)}`
+  let html = getIndexHtmlTemplate()
+
+  html = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${escapeHtmlAttr(meta.title)}</title>`)
+  html = replaceMetaContent(html, 'name', 'description', meta.description)
+  html = replaceMetaContent(html, 'property', 'og:title', meta.title)
+  html = replaceMetaContent(html, 'property', 'og:description', meta.description)
+  html = replaceMetaContent(html, 'property', 'og:image', meta.image)
+  html = replaceMetaContent(html, 'property', 'og:url', canonicalUrl)
+  html = replaceMetaContent(html, 'name', 'twitter:title', meta.title)
+  html = replaceMetaContent(html, 'name', 'twitter:description', meta.description)
+  html = replaceMetaContent(html, 'name', 'twitter:image', meta.image)
+
+  return html
+}
+
 const server = http.createServer(async (request, response) => {
   // Baseline security headers on every response. No Content-Security-Policy
   // here on purpose -- Stripe's Elements/Checkout embed needs js.stripe.com
@@ -4945,9 +5064,21 @@ const server = http.createServer(async (request, response) => {
       }
 
       const routeExists = await isKnownRoute(pathname)
-      serveStaticFile(response, path.join(distDir, 'index.html'), request, {
-        statusCode: routeExists ? 200 : 404,
-      })
+      const statusCode = routeExists ? 200 : 404
+      const html = await renderIndexHtmlForRoute(pathname)
+      const headers = {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': Buffer.byteLength(html),
+      }
+
+      if (request.method === 'HEAD') {
+        response.writeHead(statusCode, headers)
+        response.end()
+        return
+      }
+
+      response.writeHead(statusCode, headers)
+      response.end(html)
       return
     }
 
