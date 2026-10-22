@@ -327,6 +327,23 @@ export async function updateSharedShirtInventory(inventory) {
   return payload.inventory
 }
 
+// Bulk film-stock update, keyed by product id -- `updates` looks like
+// { [productId]: nextFilmCount }. Only touches the products included.
+export async function updateFilmInventory(updates) {
+  const payload = await parseJsonResponse(
+    await fetch('/api/admin/products/film-inventory', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ updates }),
+    }),
+  )
+
+  return payload.products
+}
+
 export async function downloadAdminFile(url, suggestedFileName) {
   const response = await fetch(url, {
     credentials: 'include',

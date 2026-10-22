@@ -108,7 +108,7 @@ const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12
 const COLOR_OPTIONS = ['black', 'white', 'ash-grey']
-const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL']
+const SIZE_OPTIONS = ['S', 'M', 'L', 'XL']
 const PRODUCT_TYPE_OPTIONS = ['shirt', 'bottoms', 'merch']
 const CATEGORY_OPTIONS = ['/tees', '/dress-shirts', '/bottoms', '/other-merchandise']
 const INVENTORY_SCOPE_OPTIONS = ['shared-shirt', 'untracked']
@@ -3650,15 +3650,36 @@ const STATIC_MIME_TYPES_BY_EXTENSION = {
 // when serving anything a <video> or <audio> tag might load. iOS Safari in
 // particular refuses to play video that isn't served with proper 206
 // Partial Content responses to its Range probes.
-function serveStaticFile(response, filePath, request) {
+//
+// `options.statusCode` lets a caller serve this file's body under a
+// different status (used for the SPA shell on an unknown route -- the
+// visitor still gets the app, but a crawler or uptime monitor sees a real
+// 404 instead of 200 everywhere).
+function serveStaticFile(response, filePath, request, options = {}) {
   if (!existsSync(filePath)) {
     textResponse(response, 404, 'Not found.')
     return
   }
 
+  const method = request?.method || 'GET'
+  const statusCode = options.statusCode || 200
   const extension = path.extname(filePath).toLowerCase()
   const contentType = STATIC_MIME_TYPES_BY_EXTENSION[extension] || 'application/octet-stream'
   const fileSize = statSync(filePath).size
+
+  // HEAD gets the same headers a GET would, just no body -- link checkers
+  // and uptime monitors that probe with HEAD used to get a bare 404 here
+  // regardless of whether the page actually existed.
+  if (method === 'HEAD') {
+    response.writeHead(statusCode, {
+      'Content-Type': contentType,
+      'Content-Length': fileSize,
+      'Accept-Ranges': 'bytes',
+    })
+    response.end()
+    return
+  }
+
   const rangeHeader = request?.headers?.range
   const rangeMatch = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader) : null
 
@@ -3681,7 +3702,7 @@ function serveStaticFile(response, filePath, request) {
     // file rather than erroring, so playback still works either way.
   }
 
-  response.writeHead(200, {
+  response.writeHead(statusCode, {
     'Content-Type': contentType,
     'Content-Length': fileSize,
     'Accept-Ranges': 'bytes',
@@ -3689,7 +3710,83 @@ function serveStaticFile(response, filePath, request) {
   createReadStream(filePath).pipe(response)
 }
 
+// Mirrors the client router's known static paths (src/App.jsx) -- kept as
+// a plain list here since the server has no access to the client's route
+// table. A product route is "known" only if that slug actually exists and
+// is active, same rule the client uses to show ProductMissingPage.
+const STATIC_KNOWN_ROUTES = new Set([
+  '/',
+  '/tees',
+  '/dress-shirts',
+  '/bottoms',
+  '/other-merchandise',
+  '/about',
+  '/contact',
+  '/faq',
+  '/tos',
+  '/privacy-policy',
+  '/messaging-service-privacy-policy',
+  '/refunds',
+  '/cart',
+  '/checkout',
+  '/checkout/return',
+  '/track-order',
+  '/dev',
+  '/dev/orders',
+  '/dev/customers',
+  '/dev/backups',
+  '/dev/shipping',
+])
+
+function normalizeRoutePath(pathname) {
+  return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname
+}
+
+async function isKnownRoute(pathname) {
+  const normalized = normalizeRoutePath(pathname)
+
+  if (STATIC_KNOWN_ROUTES.has(normalized)) {
+    return true
+  }
+
+  const productMatch = normalized.match(/^\/products\/([^/]+)$/)
+
+  if (!productMatch) {
+    return false
+  }
+
+  const slug = decodeURIComponent(productMatch[1])
+  const products = await readProducts()
+  return products.some((product) => product.slug === slug && product.active !== false)
+}
+
 const server = http.createServer(async (request, response) => {
+  // Baseline security headers on every response. No Content-Security-Policy
+  // here on purpose -- Stripe's Elements/Checkout embed needs js.stripe.com
+  // script and frame access, and a CSP tight enough to be worth adding
+  // risks silently breaking the actual payment flow without careful,
+  // separately-tested allowlisting.
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.setHeader('X-Frame-Options', 'SAMEORIGIN')
+  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  if (APP_URL.startsWith('https://')) {
+    response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  }
+
+  // www.matsumotoshop.com served the exact same content as the apex domain
+  // with no redirect -- two copies of every page as far as Google was
+  // concerned. Send www traffic to the apex permanently rather than
+  // rendering it twice.
+  const requestHost = request.headers.host || ''
+
+  if (requestHost.startsWith('www.')) {
+    const scheme = APP_URL.startsWith('https://') ? 'https' : 'http'
+    response.writeHead(301, { Location: `${scheme}://${requestHost.slice(4)}${request.url}` })
+    response.end()
+    return
+  }
+
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host}`)
   const { pathname } = requestUrl
 
@@ -3767,6 +3864,52 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && pathname === '/api/products') {
       const products = await readProducts()
       jsonResponse(response, 200, { products: products.map(publicProduct) })
+      return
+    }
+
+    // Generated live rather than a static file -- a static sitemap can't
+    // know about products added, renamed, or unpublished after it was
+    // written, which is exactly how the 10 live product pages ended up
+    // missing from it.
+    if ((request.method === 'GET' || request.method === 'HEAD') && pathname === '/sitemap.xml') {
+      const baseUrl = APP_URL.replace(/\/$/, '')
+      const staticPaths = [
+        '/',
+        '/tees',
+        '/dress-shirts',
+        '/bottoms',
+        '/other-merchandise',
+        '/about',
+        '/contact',
+        '/faq',
+        '/tos',
+        '/privacy-policy',
+        '/refunds',
+      ]
+      const products = await readProducts()
+      const productPaths = products
+        .filter((product) => product.active !== false)
+        .map((product) => `/products/${encodeURIComponent(product.slug)}`)
+      const urls = [...staticPaths, ...productPaths].map((path) => `${baseUrl}${path}`)
+      const xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        ...urls.map((url) => `  <url><loc>${url}</loc></url>`),
+        '</urlset>',
+        '',
+      ].join('\n')
+
+      if (request.method === 'HEAD') {
+        response.writeHead(200, {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Content-Length': Buffer.byteLength(xml),
+        })
+        response.end()
+        return
+      }
+
+      response.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' })
+      response.end(xml)
       return
     }
 
@@ -4500,6 +4643,62 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
+    // Quick bulk edit for design-film stock, separate from the full
+    // per-product edit form -- same spirit as the shared shirt-inventory
+    // route above, just keyed by product id instead of color/size.
+    if (request.method === 'PUT' && pathname === '/api/admin/products/film-inventory') {
+      if (!requireAdmin(request, response)) {
+        return
+      }
+
+      const body = await readJsonBody(request)
+      const updates = body.updates && typeof body.updates === 'object' ? body.updates : {}
+      const products = await readProducts()
+      const errors = []
+      const updatesById = new Map()
+
+      for (const [productId, rawValue] of Object.entries(updates)) {
+        const product = products.find((item) => item.id === productId)
+
+        if (!product) {
+          errors.push(`Unknown product: ${productId}.`)
+          continue
+        }
+
+        if (product.productType !== 'shirt') {
+          errors.push(`${product.name} does not track film inventory.`)
+          continue
+        }
+
+        const numericValue = Number(rawValue)
+
+        if (!Number.isFinite(numericValue) || numericValue < 0) {
+          errors.push(`${product.name}: film count must be zero or greater.`)
+          continue
+        }
+
+        updatesById.set(productId, Math.floor(numericValue))
+      }
+
+      if (errors.length) {
+        jsonResponse(response, 400, { errors })
+        return
+      }
+
+      const updatedProducts = products.map((product) =>
+        updatesById.has(product.id) ? { ...product, filmInventory: updatesById.get(product.id) } : product,
+      )
+
+      await writeProducts(updatedProducts)
+
+      jsonResponse(response, 200, {
+        products: updatedProducts
+          .filter((product) => updatesById.has(product.id))
+          .map(publicProduct),
+      })
+      return
+    }
+
     if (request.method === 'POST' && pathname === '/api/admin/products') {
       if (!requireAdmin(request, response)) {
         return
@@ -4721,7 +4920,7 @@ const server = http.createServer(async (request, response) => {
       return
     }
 
-    if (request.method === 'GET' && pathname.startsWith('/uploads/')) {
+    if ((request.method === 'GET' || request.method === 'HEAD') && pathname.startsWith('/uploads/')) {
       const targetPath = path.join(uploadsDir, pathname.replace('/uploads/', ''))
       const resolvedTarget = path.resolve(targetPath)
 
@@ -4736,7 +4935,7 @@ const server = http.createServer(async (request, response) => {
 
     const distExists = existsSync(distDir) && statSync(distDir).isDirectory()
 
-    if (request.method === 'GET' && distExists) {
+    if ((request.method === 'GET' || request.method === 'HEAD') && distExists) {
       const requestedPath = pathname === '/' ? 'index.html' : pathname.slice(1)
       const candidatePath = path.join(distDir, requestedPath)
 
@@ -4745,7 +4944,10 @@ const server = http.createServer(async (request, response) => {
         return
       }
 
-      serveStaticFile(response, path.join(distDir, 'index.html'))
+      const routeExists = await isKnownRoute(pathname)
+      serveStaticFile(response, path.join(distDir, 'index.html'), request, {
+        statusCode: routeExists ? 200 : 404,
+      })
       return
     }
 

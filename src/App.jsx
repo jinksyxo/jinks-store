@@ -13,6 +13,7 @@ import {
   getStoredProducts,
   saveStoredProduct,
   subscribeToNewsletter,
+  updateFilmInventory,
   updateStoredProduct,
   validatePromoCode,
 } from './lib/devPortalStore'
@@ -129,16 +130,18 @@ const tickerLoopItems = Array.from({ length: 3 }, () => tickerItems).flat()
 const ARRIVING_SOON_CATEGORY_PATHS = new Set(['/dress-shirts', '/bottoms', '/other-merchandise'])
 const arrivingSoonCopy = 'arriving soon! subscribe to our newsletter to be kept up-to-date on new arrivals.'
 
-const teeSizeGuideColumns = ['S', 'M', 'L', 'XL', '2XL']
+// Matches the size buttons (SIZE_OPTIONS) exactly -- no XXL/2XL, that size
+// isn't stocked. Rows were also tripled up under different names for the
+// same three measurements (Chest/Chest Width (Laid Flat)/Body Width were
+// one number; Body Length/Full Body Length were another; the two
+// Tolerance rows were identical) -- collapsed down to the actual distinct
+// measurements.
+const teeSizeGuideColumns = ['S', 'M', 'L', 'XL']
 const teeSizeGuideRows = [
-  { label: 'Chest', values: ['18', '20', '22', '24', '26'] },
-  { label: 'Chest Width (Laid Flat)', values: ['18', '20', '22', '24', '26'] },
-  { label: 'Body Length Tolerance', values: ['-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1'] },
-  { label: 'Chest Tolerance', values: ['-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1'] },
-  { label: 'Body Length', values: ['28', '29', '30', '31', '32'] },
-  { label: 'Sleeve Length', values: ['15 5/8', '17', '18 1/2', '20', '21 1/2'] },
-  { label: 'Full Body Length', values: ['28', '29', '30', '31', '32'] },
-  { label: 'Body Width', values: ['18', '20', '22', '24', '26'] },
+  { label: 'Chest Width (Laid Flat)', values: ['18', '20', '22', '24'] },
+  { label: 'Body Length', values: ['28', '29', '30', '31'] },
+  { label: 'Sleeve Length', values: ['15 5/8', '17', '18 1/2', '20'] },
+  { label: 'Tolerance (chest & length)', values: ['-/+ 1', '-/+ 1', '-/+ 1', '-/+ 1'] },
 ]
 
 const merchPageContent = {
@@ -269,7 +272,7 @@ const termsOfServiceContent = {
     "By visiting our site and/or purchasing something from us, you engage in our 'Service' and agree to be bound by the following terms and conditions ('Terms of Service', 'Terms'), including those additional terms and conditions and policies referenced herein and/or available by hyperlink. These Terms of Service apply to all users of the site, including without limitation users who are browsers, vendors, customers, merchants, and/or contributors of content.",
     'Please read these Terms of Service carefully before accessing or using our website. By accessing or using any part of the site, you agree to be bound by these Terms of Service. If you do not agree to all the terms and conditions of this agreement, then you may not access the website or use any Services. If these Terms of Service are considered an offer, acceptance is expressly limited to these Terms of Service.',
     'Any new features or tools which are added to the current store shall also be subject to the Terms of Service. You can review the most current version of the Terms of Service at any time on this page. We reserve the right to update, change or replace any part of these Terms of Service by posting updates and/or changes to our website. It is your responsibility to check this page periodically for changes. Your continued use of or access to the website following the posting of any changes constitutes acceptance of those changes.',
-    'Our store is hosted on Stripe. They provide us with the online e-commerce platform that allows us to sell our products and Services to you.',
+    'We use Stripe to process payments on our store, including handling your payment information securely at checkout.',
   ],
   sections: [
     {
@@ -636,7 +639,7 @@ const messagingPrivacyPolicyContent = {
         "When you sign up for the Messaging Service, we collect personal information such as your name, email address, and other information you provide directly to us, for example responses to questionnaires about your preferences or demographic information.",
         "When you use the Messaging Service to send or receive messages, we collect communications metadata, for example the time and date a message was sent or received, and the contents of any communications you send or receive via the Messaging Service.",
         "We may also collect information about you using cookies or similar technologies on our website or other digital properties. Cookies are small text files placed on device browsers that store preferences and facilitate and enhance your experience.",
-        "Cookies enable personalization of your experience via the Messaging Service, for example sending you personalized text messages such as shopping cart reminders.",
+        "Cookies enable personalization of your experience via the Messaging Service, for example sending you personalized emails such as shopping cart reminders.",
         "If you participate in an email survey, or order with us, we will collect basic contact information and any other information you choose to provide in connection with these activities. We will also collect your personal information if you contact us with questions about the Messaging Service or for customer service.",
       ],
     },
@@ -789,7 +792,7 @@ const footerPolicyLinks = [
 ]
 
 const COLOR_OPTIONS = ['black', 'white', 'ash-grey']
-const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL']
+const SIZE_OPTIONS = ['S', 'M', 'L', 'XL']
 const CART_STORAGE_KEY = 'matsumoto_cart_v1'
 const PROMO_CODE_STORAGE_KEY = 'matsumoto_promo_v1'
 
@@ -1540,7 +1543,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                     onClick={() => handleImageSelect(imageIndex)}
                     aria-label={`Show ${colorLabel}`}
                   >
-                    <img src={imageUrl} alt="" aria-hidden="true" />
+                    <img src={imageUrl} alt={`${product.name} in ${colorLabel}`} />
                     <span>{colorLabel}</span>
                   </button>
                 )
@@ -1576,6 +1579,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                       type="button"
                       className={`product-chip ${selectedColor === color ? 'is-active' : ''}`}
                       onClick={() => handleColorSelect(color)}
+                      aria-pressed={selectedColor === color}
                     >
                       {color.replace('-', ' ')}
                     </button>
@@ -1594,6 +1598,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
                       type="button"
                       className={`product-chip ${selectedSize === size ? 'is-active' : ''}`}
                       onClick={() => setSelectedSize(size)}
+                      aria-pressed={selectedSize === size}
                     >
                       {size}
                     </button>
@@ -1652,6 +1657,7 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
           <div className="product-size-guide-copy">
             <p className="eyebrow">size guide</p>
             <h3 id="product-size-guide-heading">tee measurements</h3>
+            <p className="product-size-guide-swipe-hint">Swipe to see every size &rarr;</p>
           </div>
 
           <div className="product-size-guide-table-wrap">
@@ -1941,6 +1947,31 @@ function ProductMissingPage({ onNavigate }) {
   )
 }
 
+function NotFoundPage({ onNavigate }) {
+  return (
+    <section className="notes-section route-section">
+      <div className="notes-copy">
+        <p className="eyebrow">404</p>
+        <h2>page not found.</h2>
+        <p>There&apos;s nothing at this address. It may have been moved or never existed.</p>
+        <a
+          className="button button-primary notes-button"
+          href="/"
+          onClick={(event) => onNavigate(event, '/')}
+        >
+          Return to map
+        </a>
+      </div>
+
+      <div className="newsletter-card">
+        <p className="panel-label">try instead</p>
+        <h3>Browse the categories.</h3>
+        <p>Tees, dress shirts, bottoms, and other merchandise are all linked from the map.</p>
+      </div>
+    </section>
+  )
+}
+
 function AboutPage({ onNavigate }) {
   return (
     <section className="about-section route-section">
@@ -1948,7 +1979,7 @@ function AboutPage({ onNavigate }) {
         <p className="eyebrow">about</p>
         <h2>matsumoto*</h2>
         <p>
-          matsumoto* is a clothing brand based and ran out of west jordan, UT created by
+          matsumoto* is a clothing brand based and run out of west jordan, UT created by
           ethan jinks. matsumoto* specializes in band tees and one-of-one cyanotype pieces.
         </p>
 
@@ -2374,14 +2405,21 @@ function SiteFooter({ onNavigate }) {
 
       <div className="footer-bottom-row">
         <div className="footer-socials">
-          <a href="https://instagram.com" target="_blank" rel="noreferrer" aria-label="Instagram">
+          <a
+            href="https://www.instagram.com/matsumotoshop/"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Instagram"
+          >
             <SocialIcon kind="instagram" />
           </a>
-          <a href="https://tiktok.com" target="_blank" rel="noreferrer" aria-label="TikTok">
+          <a
+            href="https://www.tiktok.com/@matsumotoshop"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="TikTok"
+          >
             <SocialIcon kind="tiktok" />
-          </a>
-          <a href="https://facebook.com" target="_blank" rel="noreferrer" aria-label="Facebook">
-            <SocialIcon kind="facebook" />
           </a>
         </div>
 
@@ -2411,6 +2449,7 @@ function renderPage(
   promoCode,
   onApplyPromoCode,
   onRemovePromoCode,
+  onUpdateFilmInventory,
 ) {
   const productSlug = productSlugFromPath(pathname)
   const matchedProduct = productSlug
@@ -2539,6 +2578,7 @@ function renderPage(
         onSaveProduct={onSaveProduct}
         onUpdateProduct={onUpdateProduct}
         onDeleteProduct={onDeleteProduct}
+        onUpdateFilmInventory={onUpdateFilmInventory}
         onNavigate={onNavigate}
         pathname={pathname}
         storageError={storageError}
@@ -2546,7 +2586,7 @@ function renderPage(
     )
   }
 
-  return <MapHome featuredItems={featuredItems} utahItems={utahItems} onNavigate={onNavigate} />
+  return <NotFoundPage onNavigate={onNavigate} />
 }
 
 function pageTitle(pathname, productCatalog) {
@@ -2617,7 +2657,7 @@ function pageTitle(pathname, productCatalog) {
   }
 
   if (!currentLink) {
-    return 'matsumoto*'
+    return productSlug ? 'Product Not Found | matsumoto*' : 'Page Not Found | matsumoto*'
   }
 
   return `${currentLink.label} | matsumoto*`
@@ -2751,6 +2791,21 @@ function App() {
     )
     setStorageError('')
     return updatedProduct
+  }
+
+  // `updates` is { [productId]: nextFilmCount }. Only merges the film count
+  // back in for the products that were actually part of this save -- every
+  // other field on each product is left untouched.
+  const handleUpdateFilmInventory = async (updates) => {
+    const updatedProducts = await updateFilmInventory(updates)
+    setCustomProducts((currentProducts) =>
+      currentProducts.map((currentProduct) => {
+        const updated = updatedProducts.find((product) => product.id === currentProduct.id)
+        return updated ? { ...currentProduct, filmInventory: updated.filmInventory } : currentProduct
+      }),
+    )
+    setStorageError('')
+    return updatedProducts
   }
 
   const handleAddToCart = ({ product, color, size, quantity }) => {
@@ -2903,6 +2958,7 @@ function App() {
         promoCode,
         handleApplyPromoCode,
         handleRemovePromoCode,
+        handleUpdateFilmInventory,
       )}
       <SiteFooter onNavigate={handleNavigate} />
     </main>

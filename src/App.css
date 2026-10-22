@@ -1302,7 +1302,15 @@
   line-height: 1;
 }
 
+.product-size-guide-swipe-hint {
+  display: none;
+  margin: 0;
+  font-size: 0.82rem;
+  opacity: 0.68;
+}
+
 .product-size-guide-table-wrap {
+  position: relative;
   border: 1px solid var(--border);
   background: #fff;
 }
@@ -2140,6 +2148,20 @@
   padding: 0.55rem 0.6rem;
 }
 
+.dev-film-inventory-table {
+  min-width: 0;
+}
+
+.dev-film-inventory-table td {
+  min-width: 6rem;
+}
+
+.dev-film-row-low th,
+.dev-film-row-low td {
+  background: #fdeceb;
+  color: #b3261e;
+}
+
 .dev-inventory-empty,
 .dev-uploaded-empty {
   margin: 0;
@@ -2763,13 +2785,30 @@
     font-size: clamp(1.3rem, 6.2vw, 1.9rem);
   }
 
+  .product-size-guide-swipe-hint {
+    display: block;
+  }
+
   .product-size-guide-table-wrap {
     overflow-x: auto;
   }
 
+  .product-size-guide-table-wrap::after {
+    content: '';
+    position: sticky;
+    top: 0;
+    right: 0;
+    float: right;
+    width: 1.5rem;
+    height: 100%;
+    margin-left: -1.5rem;
+    background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.95));
+    pointer-events: none;
+  }
+
   .product-size-guide-table {
     width: auto;
-    min-width: 30rem;
+    min-width: 26rem;
   }
 }
 

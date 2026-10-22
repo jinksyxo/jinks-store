@@ -48,7 +48,7 @@ const COLOR_OPTIONS = [
   { id: 'white', label: 'white' },
   { id: 'ash-grey', label: 'ash grey' },
 ]
-const SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL']
+const SIZE_OPTIONS = ['S', 'M', 'L', 'XL']
 const PRODUCT_TYPE_OPTIONS = [
   { id: 'shirt', label: 'shirt' },
   { id: 'bottoms', label: 'bottoms' },
@@ -446,6 +446,42 @@ function ProductInventoryTable({ inventory, onQuantityChange }) {
                   />
                 </td>
               ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function FilmInventoryTable({ rows, onValueChange }) {
+  if (!rows.length) {
+    return <p>No active shirt designs yet.</p>
+  }
+
+  return (
+    <div className="dev-inventory-wrap">
+      <table className="dev-inventory-table dev-film-inventory-table">
+        <thead>
+          <tr>
+            <th>Design</th>
+            <th>Film left</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className={Number(row.value || 0) <= 1 ? 'dev-film-row-low' : ''}>
+              <th>{row.name}</th>
+              <td>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={row.value}
+                  onChange={(event) => onValueChange(row.id, event.target.value)}
+                  aria-label={`${row.name} film count`}
+                />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -1345,6 +1381,7 @@ function DevPage({
   onSaveProduct,
   onUpdateProduct,
   onDeleteProduct,
+  onUpdateFilmInventory,
   onNavigate,
   pathname,
   storageError,
@@ -1371,6 +1408,10 @@ function DevPage({
   const [isSaving, setIsSaving] = useState(false)
   const [inventoryMessage, setInventoryMessage] = useState('')
   const [isInventorySaving, setIsInventorySaving] = useState(false)
+  const [filmDrafts, setFilmDrafts] = useState({})
+  const [filmInventoryMessage, setFilmInventoryMessage] = useState('')
+  const [filmInventoryError, setFilmInventoryError] = useState('')
+  const [isFilmInventorySaving, setIsFilmInventorySaving] = useState(false)
   const [orders, setOrders] = useState([])
   const [ordersError, setOrdersError] = useState('')
   const [savingOrderId, setSavingOrderId] = useState('')
@@ -2060,6 +2101,62 @@ function DevPage({
       setFormErrors([error.message || 'The shared shirt inventory could not be saved.'])
     } finally {
       setIsInventorySaving(false)
+    }
+  }
+
+  // Active shirt products only -- film stock on an unpublished design isn't
+  // an operational concern. Sorted lowest-first so designs about to run out
+  // surface at the top instead of getting lost alphabetically.
+  const filmInventoryRows = useMemo(
+    () =>
+      products
+        .filter((product) => product.productType === 'shirt' && product.active !== false)
+        .map((product) => ({
+          id: product.id,
+          name: product.name,
+          value:
+            filmDrafts[product.id] !== undefined
+              ? filmDrafts[product.id]
+              : String(product.filmInventory ?? 0),
+        }))
+        .sort((a, b) => Number(a.value || 0) - Number(b.value || 0)),
+    [products, filmDrafts],
+  )
+
+  const updateFilmDraft = (productId, value) => {
+    setFilmDrafts((current) => ({ ...current, [productId]: value }))
+  }
+
+  const handleSaveFilmInventory = async () => {
+    setFilmInventoryError('')
+    setFilmInventoryMessage('')
+
+    if (!Object.keys(filmDrafts).length) {
+      setFilmInventoryMessage('No changes to save.')
+      return
+    }
+
+    setIsFilmInventorySaving(true)
+
+    try {
+      const updates = Object.fromEntries(
+        Object.entries(filmDrafts).map(([id, value]) => [
+          id,
+          Math.max(0, Math.floor(Number(value) || 0)),
+        ]),
+      )
+      await onUpdateFilmInventory(updates)
+      setFilmDrafts({})
+      setFilmInventoryMessage('Film inventory updated.')
+    } catch (error) {
+      if (String(error.message || '').toLowerCase().includes('unauthorized')) {
+        setIsUnlocked(false)
+        setPasswordError('Your admin session expired. Log in again.')
+      } else {
+        setFilmInventoryError(error.message || 'The film inventory could not be saved.')
+      }
+    } finally {
+      setIsFilmInventorySaving(false)
     }
   }
 
@@ -2989,6 +3086,32 @@ function DevPage({
                   disabled={isInventorySaving}
                 >
                   {isInventorySaving ? 'Saving inventory...' : 'Save shirt inventory'}
+                </button>
+              </div>
+            </div>
+
+            <div className="newsletter-card dev-sidebar-card">
+              <div className="dev-inventory-section">
+                <div className="dev-inventory-copy">
+                  <p className="panel-label">film inventory</p>
+                  <h3>Design film stock</h3>
+                  <p>
+                    Each tee sold uses one film of that design. Active designs only, lowest
+                    stock first.
+                  </p>
+                </div>
+                <FilmInventoryTable rows={filmInventoryRows} onValueChange={updateFilmDraft} />
+                {filmInventoryMessage ? (
+                  <p className="dev-form-success">{filmInventoryMessage}</p>
+                ) : null}
+                {filmInventoryError ? <p className="dev-form-error">{filmInventoryError}</p> : null}
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={handleSaveFilmInventory}
+                  disabled={isFilmInventorySaving}
+                >
+                  {isFilmInventorySaving ? 'Saving film inventory...' : 'Save film inventory'}
                 </button>
               </div>
             </div>
