@@ -660,6 +660,11 @@
   padding: 2rem;
 }
 
+.notes-copy,
+.newsletter-card {
+  min-width: 0;
+}
+
 .eyebrow,
 .panel-label,
 .product-badge,
@@ -811,6 +816,7 @@
   width: 100%;
   margin-left: 0;
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .category-page-section {
@@ -2698,12 +2704,11 @@
     right: 1.5rem;
   }
 
-  /* .network-section shares a bare "1fr" column with several other
-     sections above -- a bare 1fr track still has an auto (min-content)
-     floor, not 0. That was invisible while this section was display:none
-     on mobile; now that it's shown, .network-copy's h1 forces it wide. */
+  /* Hidden on mobile by choice, not because it's broken -- the overflow
+     fixes below stay in place (harmless either way) in case this gets
+     turned back on later. */
   .network-section {
-    grid-template-columns: minmax(0, 1fr);
+    display: none;
   }
 
   .network-copy {
