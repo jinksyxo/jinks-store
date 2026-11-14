@@ -958,6 +958,23 @@ function getAvailableQuantity(product, shirtInventory, color, size) {
   return Math.min(blankQuantity, filmQuantity)
 }
 
+function isProductSoldOut(product, shirtInventory) {
+  if (product.inventoryScope !== 'shared-shirt') {
+    return false
+  }
+
+  const colors = getSellableColors(product.colors)
+  const sizes = Array.isArray(product.allowedSizes) ? product.allowedSizes : []
+
+  if (!colors.length || !sizes.length) {
+    return false
+  }
+
+  return colors.every((color) =>
+    sizes.every((size) => (getAvailableQuantity(product, shirtInventory, color, size) ?? 0) <= 0),
+  )
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -1360,7 +1377,7 @@ function NewsletterSignupForm() {
   )
 }
 
-function CategoryPage({ content, onNavigate }) {
+function CategoryPage({ content, shirtInventory, onNavigate }) {
   const isArrivingSoonCategory = ARRIVING_SOON_CATEGORY_PATHS.has(content.pathname)
 
   return (
@@ -1395,6 +1412,7 @@ function CategoryPage({ content, onNavigate }) {
               <ProductCard
                 key={`${content.title}-${product.slug || product.name}`}
                 product={product}
+                isOutOfStock={isProductSoldOut(product, shirtInventory)}
                 onNavigate={onNavigate}
               />
             ))}
@@ -1657,7 +1675,6 @@ function ProductPage({ product, shirtInventory, cartCount, onAddToCart, onNaviga
           <div className="product-size-guide-copy">
             <p className="eyebrow">size guide</p>
             <h3 id="product-size-guide-heading">tee measurements</h3>
-            <p className="product-size-guide-swipe-hint">Swipe to see every size &rarr;</p>
           </div>
 
           <div className="product-size-guide-table-wrap">
@@ -2527,6 +2544,7 @@ function renderPage(
           pathname,
           cards: categoryCards(pathname, customProducts),
         }}
+        shirtInventory={shirtInventory}
         onNavigate={onNavigate}
       />
     )

@@ -738,6 +738,18 @@
   color: var(--text-h);
 }
 
+.button-disabled {
+  background: #fff;
+  border-color: var(--border);
+  color: var(--text);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-disabled:hover {
+  transform: none;
+}
+
 .hero-panel {
   display: grid;
   align-content: center;
@@ -952,6 +964,11 @@
 
 .product-image-primary {
   opacity: 1;
+}
+
+.product-card-sold-out .product-image {
+  filter: grayscale(1);
+  opacity: 0.55;
 }
 
 .product-image-hover {
@@ -1312,13 +1329,6 @@
   margin: 0;
   font-size: 1.45rem;
   line-height: 1;
-}
-
-.product-size-guide-swipe-hint {
-  display: none;
-  margin: 0;
-  font-size: 0.82rem;
-  opacity: 0.68;
 }
 
 .product-size-guide-table-wrap {
@@ -2839,30 +2849,10 @@
     font-size: clamp(1.3rem, 6.2vw, 1.9rem);
   }
 
-  .product-size-guide-swipe-hint {
-    display: block;
-  }
-
-  .product-size-guide-table-wrap {
-    overflow-x: auto;
-  }
-
-  .product-size-guide-table-wrap::after {
-    content: '';
-    position: sticky;
-    top: 0;
-    right: 0;
-    float: right;
-    width: 1.5rem;
-    height: 100%;
-    margin-left: -1.5rem;
-    background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.95));
-    pointer-events: none;
-  }
-
-  .product-size-guide-table {
-    width: auto;
-    min-width: 26rem;
+  .product-size-guide-table th,
+  .product-size-guide-table td {
+    padding: 0.5rem 0.35rem;
+    font-size: 0.78rem;
   }
 }
 

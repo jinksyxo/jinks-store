@@ -2,7 +2,7 @@
 // Remove 'ash-grey' from this list once ash-grey items are ready to sell.
 const HIDDEN_COLOR_OPTIONS = ['ash-grey']
 
-function ProductCard({ product, onNavigate }) {
+function ProductCard({ product, isOutOfStock, onNavigate }) {
   const formatCurrency = (value) =>
     new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -31,7 +31,11 @@ function ProductCard({ product, onNavigate }) {
   const productHref = `/products/${product.slug}`
 
   return (
-    <article className={`product-card${hasDistinctHoverImage ? '' : ' product-card-single-color'}`}>
+    <article
+      className={`product-card${hasDistinctHoverImage ? '' : ' product-card-single-color'}${
+        isOutOfStock ? ' product-card-sold-out' : ''
+      }`}
+    >
       <a
         className="product-art"
         href={productHref}
@@ -73,13 +77,19 @@ function ProductCard({ product, onNavigate }) {
         </div>
         {variantSummary ? <p className="product-variant-note">{variantSummary}</p> : null}
         <div className="product-actions">
-          <a
-            className="button button-primary"
-            href={productHref}
-            onClick={(event) => onNavigate(event, productHref)}
-          >
-            Choose options
-          </a>
+          {isOutOfStock ? (
+            <span className="button button-primary button-disabled" aria-disabled="true">
+              Out of stock
+            </span>
+          ) : (
+            <a
+              className="button button-primary"
+              href={productHref}
+              onClick={(event) => onNavigate(event, productHref)}
+            >
+              Choose options
+            </a>
+          )}
         </div>
       </div>
     </article>
